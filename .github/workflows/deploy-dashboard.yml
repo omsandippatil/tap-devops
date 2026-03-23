@@ -1,0 +1,32 @@
+name: Deploy Dashboard
+
+on:
+  push:
+    branches: [main]
+    paths: [dashboard/**]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync dashboard files
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.TAP_SERVER_HOST }}
+          username: ${{ secrets.TAP_DEPLOY_USER }}
+          key: ${{ secrets.TAP_SSH_KEY }}
+          source: dashboard/
+          target: /opt/tap-dashboard/
+
+      - name: Restart dashboard
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.TAP_SERVER_HOST }}
+          username: ${{ secrets.TAP_DEPLOY_USER }}
+          key: ${{ secrets.TAP_SSH_KEY }}
+          script: |
+            cd /opt/tap-dashboard
+            npm install --omit=dev --silent
+            systemctl restart tap-dashboard
