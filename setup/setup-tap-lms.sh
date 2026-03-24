@@ -54,11 +54,9 @@ DB_ROOT_USER="${DB_ROOT_USER:-postgres}"
 DB_NAME="${DB_NAME:-frappe_db}"
 DB_PASS="${DB_PASS:-}"
 NODE_VERSION="${NODE_VERSION:-16.15.0}"
-PYTHON_VERSION="${PYTHON_VERSION:-python3}"
 EXTRA_REPO="${EXTRA_REPO:-https://github.com/Midocean-Technologies/business_theme_v14.git}"
 EXTRA_APP="${EXTRA_APP:-business_theme_v14}"
 INSTALL_EXTRA_APP="${INSTALL_EXTRA_APP:-true}"
-INSTALL_SSL="${INSTALL_SSL:-false}"
 SSL_DOMAIN="${SSL_DOMAIN:-}"
 ENABLE_DEV_MODE="${ENABLE_DEV_MODE:-false}"
 ENABLE_SERVER_SCRIPT="${ENABLE_SERVER_SCRIPT:-true}"
@@ -82,15 +80,16 @@ usage() {
     echo "  --frappe-branch <branch> Frappe framework branch (default: version-14)"
     echo "  --repo <url>             TAP app git repo URL"
     echo "  --app <name>             TAP app name"
-    echo "  --domain <domain>        Public domain or IP"
+    echo "  --domain <domain>        Public domain or IP (used for server_name and SSL CN)"
     echo "  --db-pass <pass>         PostgreSQL password"
     echo "  --restore                Restore from backup"
     echo "  --backup-db <path>       Path to DB backup .sql.gz"
     echo "  --backup-pub <path>      Path to public files backup .tar"
     echo "  --backup-priv <path>     Path to private files backup .tar"
-    echo "  --ssl                    Install SSL certificate"
-    echo "  --ssl-domain <domain>    Domain for SSL"
+    echo "  --ssl-domain <domain>    Use Let's Encrypt for this domain instead of self-signed"
+    echo "  --no-ssl                 Skip SSL entirely"
     echo "  --dev-mode               Enable developer mode"
+    echo "  --clean-site             Drop and recreate the site from scratch"
     echo "  --config <path>          Path to config.env file"
     echo "  --local                  Run setup locally (no SSH)"
     echo "  --help                   Show this help"
@@ -99,6 +98,7 @@ usage() {
 
 LOCAL_MODE=false
 CLEAN_SITE=false
+NO_SSL=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -117,8 +117,8 @@ while [[ $# -gt 0 ]]; do
         --backup-db)      BACKUP_DB_PATH="$2"; shift 2 ;;
         --backup-pub)     BACKUP_PUBLIC_FILES_PATH="$2"; shift 2 ;;
         --backup-priv)    BACKUP_PRIVATE_FILES_PATH="$2"; shift 2 ;;
-        --ssl)            INSTALL_SSL=true; shift ;;
         --ssl-domain)     SSL_DOMAIN="$2"; shift 2 ;;
+        --no-ssl)         NO_SSL=true; shift ;;
         --dev-mode)       ENABLE_DEV_MODE=true; shift ;;
         --clean-site)     CLEAN_SITE=true; shift ;;
         --config)         CONFIG_FILE="$2"; source "$CONFIG_FILE"; shift 2 ;;
@@ -150,6 +150,16 @@ if [[ "$LOCAL_MODE" == false ]]; then
     fi
 fi
 
+if [[ -z "$TAP_PUBLIC_DOMAIN" ]]; then
+    if [[ -n "$TAP_SERVER" ]]; then
+        TAP_PUBLIC_DOMAIN="$TAP_SERVER"
+    else
+        TAP_PUBLIC_DOMAIN="localhost"
+    fi
+fi
+
+SSL_CN="${SSL_DOMAIN:-$TAP_PUBLIC_DOMAIN}"
+
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=30"
 if [[ "$LOCAL_MODE" == false ]]; then
     SSH_OPTS="$SSH_OPTS -i $PEM_FILE"
@@ -161,15 +171,6 @@ run_remote() {
         bash -c "$cmd"
     else
         ssh $SSH_OPTS "${TAP_SSH_USER}@${TAP_SERVER}" "$cmd"
-    fi
-}
-
-run_script_remote() {
-    local script="$1"
-    if [[ "$LOCAL_MODE" == true ]]; then
-        bash <(echo "$script")
-    else
-        echo "$script" | ssh $SSH_OPTS "${TAP_SSH_USER}@${TAP_SERVER}" bash
     fi
 }
 
@@ -237,9 +238,12 @@ run_as_frappe "
 if [ -d /home/${TAP_USER}/${FRAPPE_BENCH_DIR} ]; then
     echo 'frappe-bench already exists, skipping init'
 else
-    cd /home/${TAP_USER} && bench init ${FRAPPE_BENCH_DIR} --frappe-branch ${FRAPPE_BRANCH} --skip-redis-config-generation
+    cd /home/${TAP_USER} && bench init ${FRAPPE_BENCH_DIR} --frappe-branch ${FRAPPE_BRANCH}
 fi
 "
+
+echo "==> [11b/20] Generating Redis config files"
+run_as_frappe "cd /home/${TAP_USER}/${FRAPPE_BENCH_DIR} && bench setup redis"
 
 echo "==> [12/20] Configuring Redis and ports in common_site_config.json"
 run_as_frappe "
@@ -432,24 +436,9 @@ if [[ "$RESTORE_BACKUP" == "true" ]]; then
     run_as_frappe "cd /home/${TAP_USER}/${FRAPPE_BENCH_DIR} && bench --site ${TAP_SITE} migrate"
 fi
 
-echo "==> [15/20] Configuring Nginx"
+echo "==> [15/20] Configuring base Nginx"
 run_as_frappe "cd /home/${TAP_USER}/${FRAPPE_BENCH_DIR} && bench setup nginx --yes"
 run_remote "sudo ln -sf /home/${TAP_USER}/${FRAPPE_BENCH_DIR}/config/nginx.conf /etc/nginx/conf.d/frappe-bench.conf"
-
-run_remote "
-python3 -c \"
-import re, sys
-path = '/etc/nginx/conf.d/frappe-bench.conf'
-with open(path) as f:
-    content = f.read()
-content = re.sub(r'server_name [^;]+;', 'server_name ${TAP_PUBLIC_DOMAIN};', content)
-with open('/tmp/frappe-bench.conf.tmp', 'w') as f:
-    f.write(content)
-\"
-sudo cp /tmp/frappe-bench.conf.tmp /etc/nginx/conf.d/frappe-bench.conf
-echo 'nginx server_name updated to ${TAP_PUBLIC_DOMAIN}'
-"
-
 run_remote "sudo grep -q 'log_format main' /etc/nginx/nginx.conf || sudo sed -i '/^http {/a\\    log_format main \"\$remote_addr - \$remote_user [\$time_local] \\\"\$request\\\" \$status \$body_bytes_sent \\\"\$http_referer\\\" \\\"\$http_user_agent\\\" \\\"\$http_x_forwarded_for\\\"\";' /etc/nginx/nginx.conf"
 
 echo "==> [16/20] Configuring Supervisor"
@@ -464,23 +453,173 @@ echo "==> [18/20] Setting up production"
 run_remote "sudo apt-get install -y ansible"
 run_remote "sudo chmod 755 /home/${TAP_SSH_USER}"
 run_remote "sudo chmod 755 /home/${TAP_USER}"
+
+run_remote "sudo lsof -t -i:${TAP_REDIS_CACHE} -i:${TAP_REDIS_QUEUE} -i:${TAP_REDIS_SOCKETIO} 2>/dev/null | xargs sudo kill -9 2>/dev/null || true"
+
 run_as_frappe "cd /home/${TAP_USER}/${FRAPPE_BENCH_DIR} && yes | sudo bench setup production ${TAP_USER}"
+
+run_remote "
+CONF=/etc/supervisor/conf.d/frappe-bench.conf
+for pattern in \
+    '^\[program:${TAP_USER}-web\]' \
+    '^\[program:${TAP_USER}-socketio\]' \
+    '^\[program:${TAP_USER}-schedule\]' \
+    '^\[program:${TAP_USER}-worker' \
+    '^\[group:${TAP_USER}\]'; do
+    sudo sed -i \"/\${pattern}/,/^$/d\" \"\$CONF\" 2>/dev/null || true
+done
+"
+
+run_remote "sudo sed -i 's/server_name[[:space:]]*;/server_name ${TAP_PUBLIC_DOMAIN};/g' /etc/nginx/conf.d/frappe-bench.conf"
+
 run_as_frappe "cd /home/${TAP_USER}/${FRAPPE_BENCH_DIR} && bench --site ${TAP_SITE} enable-scheduler"
 run_as_frappe "cd /home/${TAP_USER}/${FRAPPE_BENCH_DIR} && bench --site ${TAP_SITE} set-maintenance-mode off"
 run_as_frappe "cd /home/${TAP_USER}/${FRAPPE_BENCH_DIR} && bench clear-cache"
 run_as_frappe "cd /home/${TAP_USER}/${FRAPPE_BENCH_DIR} && bench --site ${TAP_SITE} clear-website-cache"
 
-run_remote "sudo service nginx restart"
-run_remote "sudo supervisorctl reload"
+run_remote "sudo supervisorctl reread && sudo supervisorctl update"
 
-if [[ "$INSTALL_SSL" == "true" && -n "$SSL_DOMAIN" ]]; then
-    echo "==> [19/20] Installing SSL certificate"
+echo "==> [19/20] Configuring SSL"
+
+if [[ "$NO_SSL" == "true" ]]; then
+    echo "  Skipping SSL (--no-ssl set)"
+
+elif [[ -n "$SSL_DOMAIN" ]]; then
+    echo "  Installing Let's Encrypt certificate for ${SSL_DOMAIN}"
     run_remote "sudo apt-get install -y certbot python3-certbot-nginx"
-    run_remote "sudo certbot -d ${SSL_DOMAIN} --register-unsafely-without-email --nginx --non-interactive --agree-tos"
-    run_remote "sudo certbot renew --dry-run"
+    run_remote "sudo certbot --nginx -d ${SSL_DOMAIN} --redirect --non-interactive --agree-tos --register-unsafely-without-email"
+    run_remote "sudo sed -i 's/server_name[[:space:]]*;/server_name ${SSL_DOMAIN};/g' /etc/nginx/conf.d/frappe-bench.conf"
+    run_remote "(crontab -l 2>/dev/null | grep -q 'certbot renew') || { crontab -l 2>/dev/null; echo '0 3 * * * certbot renew --quiet --post-hook \"service nginx reload\"'; } | crontab -"
+
 else
-    echo "==> [19/20] Skipping SSL (INSTALL_SSL=${INSTALL_SSL})"
+    echo "  Installing self-signed certificate for ${SSL_CN}"
+
+    run_remote "sudo openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+        -keyout /etc/ssl/private/frappe-selfsigned.key \
+        -out /etc/ssl/certs/frappe-selfsigned.crt \
+        -subj \"/CN=${SSL_CN}\""
+
+    run_remote "cat > /tmp/frappe-ssl.conf <<'NGINXEOF'
+upstream frappe-ssl-gunicorn {
+    server 127.0.0.1:${TAP_GUNICORN_PORT} fail_timeout=0;
+}
+
+upstream frappe-ssl-socketio {
+    server 127.0.0.1:${TAP_SOCKETIO_PORT} fail_timeout=0;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name ${TAP_PUBLIC_DOMAIN};
+
+    ssl_certificate /etc/ssl/certs/frappe-selfsigned.crt;
+    ssl_certificate_key /etc/ssl/private/frappe-selfsigned.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    root /home/${TAP_USER}/${FRAPPE_BENCH_DIR}/sites;
+
+    proxy_buffer_size 128k;
+    proxy_buffers 4 256k;
+    proxy_busy_buffers_size 256k;
+
+    add_header X-Frame-Options \"SAMEORIGIN\";
+    add_header X-Content-Type-Options nosniff;
+    add_header X-XSS-Protection \"1; mode=block\";
+    add_header Referrer-Policy \"same-origin, strict-origin-when-cross-origin\";
+
+    sendfile on;
+    keepalive_timeout 15;
+    client_max_body_size 50m;
+    client_body_buffer_size 16K;
+    client_header_buffer_size 1k;
+
+    gzip on;
+    gzip_http_version 1.1;
+    gzip_comp_level 5;
+    gzip_min_length 256;
+    gzip_proxied any;
+    gzip_vary on;
+    gzip_types application/atom+xml application/javascript application/json application/rss+xml application/xhtml+xml application/xml text/css text/plain image/svg+xml;
+
+    location /assets {
+        try_files \$uri =404;
+        add_header Cache-Control \"max-age=31536000\";
+    }
+
+    location ~ ^/protected/(.*) {
+        internal;
+        try_files /${TAP_SITE}/\$1 =404;
+    }
+
+    location /socket.io {
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \"upgrade\";
+        proxy_set_header X-Frappe-Site-Name ${TAP_SITE};
+        proxy_set_header Origin \$scheme://\$http_host;
+        proxy_set_header Host \$host;
+        proxy_pass http://frappe-ssl-socketio;
+    }
+
+    location / {
+        rewrite ^(.+)/\$ \$1 permanent;
+        rewrite ^(.+)/index\.html\$ \$1 permanent;
+        rewrite ^(.+)\.html\$ \$1 permanent;
+
+        location ~* ^/files/.*\.(htm|html|svg|xml) {
+            add_header Content-Disposition \"attachment\";
+            try_files /${TAP_SITE}/public/\$uri @webserver;
+        }
+
+        try_files /${TAP_SITE}/public/\$uri @webserver;
+    }
+
+    location @webserver {
+        proxy_http_version 1.1;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Frappe-Site-Name ${TAP_SITE};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Use-X-Accel-Redirect True;
+        proxy_read_timeout 120;
+        proxy_redirect off;
+        proxy_pass http://frappe-ssl-gunicorn;
+    }
+
+    error_page 502 /502.html;
+    location /502.html {
+        root /usr/local/lib/python3.12/dist-packages/bench/config/templates;
+        internal;
+    }
+}
+NGINXEOF
+sudo mv /tmp/frappe-ssl.conf /etc/nginx/conf.d/frappe-ssl.conf"
+
+    run_remote "sudo python3 -c \"
+import re
+conf_path = '/etc/nginx/conf.d/frappe-bench.conf'
+with open(conf_path) as f:
+    content = f.read()
+redirect = '''server {
+    listen 80;
+    listen [::]:80;
+    server_name ${TAP_PUBLIC_DOMAIN};
+    return 301 https://\$host\$request_uri;
+}
+'''
+content = re.sub(r'server\s*\{[^}]*listen\s+80;.*?\}', redirect, content, flags=re.DOTALL)
+with open(conf_path, 'w') as f:
+    f.write(content)
+print('HTTP->HTTPS redirect applied')
+\""
 fi
+
+run_remote "sudo nginx -t && sudo service nginx reload"
+run_remote "sudo supervisorctl reload"
 
 if [[ "$ENABLE_SERVER_SCRIPT" == "true" || "$ENABLE_DEV_MODE" == "true" ]]; then
     echo "==> [20/20] Configuring developer/server-script settings"
@@ -501,9 +640,23 @@ run_remote "find /home/${TAP_USER}/${FRAPPE_BENCH_DIR}/logs -name '*.log' -mtime
 run_as_frappe "cd /home/${TAP_USER}/${FRAPPE_BENCH_DIR} && bench restart"
 
 echo ""
-echo "Deployment complete."
-echo "Site: ${TAP_SITE}"
-echo "Domain: ${TAP_PUBLIC_DOMAIN}"
-echo "Gunicorn port: ${TAP_GUNICORN_PORT}"
-echo "SocketIO port: ${TAP_SOCKETIO_PORT}"
-echo "Redis Cache: ${TAP_REDIS_CACHE} | Queue: ${TAP_REDIS_QUEUE} | SocketIO: ${TAP_REDIS_SOCKETIO}"
+echo "========================================"
+echo " Deployment complete"
+echo "========================================"
+echo " Site:         ${TAP_SITE}"
+echo " Domain:       ${TAP_PUBLIC_DOMAIN}"
+echo " HTTP:         http://${TAP_PUBLIC_DOMAIN}  ->  redirects to HTTPS"
+if [[ "$NO_SSL" != "true" ]]; then
+    echo " HTTPS:        https://${TAP_PUBLIC_DOMAIN}"
+    if [[ -z "$SSL_DOMAIN" ]]; then
+        echo " SSL:          Self-signed (click Advanced > Proceed in browser)"
+    else
+        echo " SSL:          Let's Encrypt (${SSL_DOMAIN})"
+    fi
+fi
+echo " Gunicorn:     127.0.0.1:${TAP_GUNICORN_PORT}"
+echo " SocketIO:     127.0.0.1:${TAP_SOCKETIO_PORT}"
+echo " Redis Cache:  127.0.0.1:${TAP_REDIS_CACHE}"
+echo " Redis Queue:  127.0.0.1:${TAP_REDIS_QUEUE}"
+echo " Redis SockIO: 127.0.0.1:${TAP_REDIS_SOCKETIO}"
+echo "========================================"
