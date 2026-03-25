@@ -392,7 +392,7 @@ port ${RAG_REDIS_SOCKETIO}
 daemonize yes
 logfile /home/${RAG_USER}/${FRAPPE_BENCH_DIR}/logs/redis-socketio.log
 dir /home/${RAG_USER}/${FRAPPE_BENCH_DIR}/logs
-save ""
+save \"\"
 stop-writes-on-bgsave-error no
 REDISEOF
 \"
@@ -420,6 +420,16 @@ echo "==> [12a/20] Patching Redis config files to use custom ports and starting 
 run_remote "
 BENCH_DIR=/home/${RAG_USER}/${FRAPPE_BENCH_DIR}
 
+kill_port() {
+    local port=\"\$1\"
+    local pid
+    pid=\$(sudo lsof -t -i:\"\$port\" 2>/dev/null || true)
+    if [ -n \"\$pid\" ]; then
+        sudo kill -9 \$pid 2>/dev/null || true
+        sleep 1
+    fi
+}
+
 patch_and_start() {
     local conf=\"\$1\"
     local target_port=\"\$2\"
@@ -430,16 +440,19 @@ patch_and_start() {
         return
     fi
 
+    kill_port \"\$target_port\"
+
     if [ ! -f \"\$conf\" ]; then
         echo \"Creating minimal Redis conf at \$conf for port \$target_port\"
         sudo -u ${RAG_USER} bash -c \"
 mkdir -p \$(dirname \$conf)
 cat > \$conf <<RCEOF
 port \$target_port
+bind 127.0.0.1
 daemonize yes
 logfile /home/${RAG_USER}/${FRAPPE_BENCH_DIR}/logs/\$log_name.log
 dir /home/${RAG_USER}/${FRAPPE_BENCH_DIR}/logs
-save ""
+save \"\"
 stop-writes-on-bgsave-error no
 RCEOF
 \"
@@ -448,6 +461,7 @@ RCEOF
     sudo sed -i \"s/^port [0-9]*/port \$target_port/\" \"\$conf\"
     sudo grep -q '^port ' \"\$conf\" || echo \"port \$target_port\" | sudo tee -a \"\$conf\" > /dev/null
     sudo grep -q '^daemonize ' \"\$conf\" && sudo sed -i 's/^daemonize .*/daemonize yes/' \"\$conf\" || echo 'daemonize yes' | sudo tee -a \"\$conf\" > /dev/null
+    sudo grep -q '^bind ' \"\$conf\" || echo 'bind 127.0.0.1' | sudo tee -a \"\$conf\" > /dev/null
 
     logfile=\$(sudo grep -i '^logfile' \"\$conf\" | awk '{print \$2}' | tr -d '\"' || true)
     if [ -n \"\$logfile\" ]; then
@@ -456,7 +470,8 @@ RCEOF
         sudo chown ${RAG_USER}:${RAG_USER} \"\$logfile\" 2>/dev/null || true
     fi
 
-    sudo redis-server \"\$conf\" --port \"\$target_port\" --daemonize yes
+    sudo -u ${RAG_USER} redis-server \"\$conf\"
+    sleep 2
 }
 
 patch_and_start \"\$BENCH_DIR/config/redis_cache.conf\"    ${RAG_REDIS_CACHE}    redis-cache
@@ -609,7 +624,7 @@ for port in ${RAG_REDIS_CACHE} ${RAG_REDIS_QUEUE} ${RAG_REDIS_SOCKETIO}; do
         for conf in \"\$BENCH_DIR/config/redis_cache.conf\" \"\$BENCH_DIR/config/redis_queue.conf\" \"\$BENCH_DIR/config/redis_socketio.conf\"; do
             [ -f \"\$conf\" ] || continue
             conf_port=\$(grep '^port' \"\$conf\" | awk '{print \$2}')
-            [ \"\$conf_port\" = \"\$port\" ] && sudo redis-server \"\$conf\" --daemonize yes
+            [ \"\$conf_port\" = \"\$port\" ] && sudo -u ${RAG_USER} redis-server \"\$conf\"
         done
     fi
 done
