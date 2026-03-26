@@ -3,1679 +3,1327 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TAP Deploy</title>
+<title>TAP DevOps — The Apprentice Project</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-:root{
-  --bg:#050507;--s1:#0b0b0f;--s2:#111116;--s3:#18181e;
-  --b1:#1e1e26;--b2:#26262f;--b3:#32323e;
-  --t1:#eeeef5;--t2:#9595a8;--t3:#55556a;--t4:#2e2e3c;
-  --green:#00e87a;--green2:rgba(0,232,122,.1);--green3:rgba(0,232,122,.05);
-  --red:#ff4455;--red2:rgba(255,68,85,.1);
-  --yellow:#f5c542;--yellow2:rgba(245,197,66,.1);
-  --blue:#4f9cf9;--blue2:rgba(79,156,249,.1);
-  --purple:#b06bf7;--purple2:rgba(176,107,247,.1);
-  --orange:#ff7b3a;--orange2:rgba(255,123,58,.1);
-  --cyan:#22d3ee;--cyan2:rgba(34,211,238,.1);
-  --f:'IBM Plex Sans',sans-serif;
-  --fm:'IBM Plex Mono',monospace;
-  --r:6px;--r2:5px;--r3:3px;
+:root {
+  --bg: #0a0a0a;
+  --bg1: #111111;
+  --bg2: #181818;
+  --bg3: #222222;
+  --border: #2a2a2a;
+  --border-bright: #3a3a3a;
+  --text: #e8e8e8;
+  --text2: #888;
+  --text3: #555;
+  --accent: #ff5c00;
+  --accent-dim: #331200;
+  --green: #22c55e;
+  --green-dim: #0a2a14;
+  --yellow: #f59e0b;
+  --yellow-dim: #2a1e00;
+  --red: #ef4444;
+  --red-dim: #2a0a0a;
+  --blue: #3b82f6;
+  --blue-dim: #0a1a2a;
+  --font-mono: 'IBM Plex Mono', monospace;
+  --font-sans: 'IBM Plex Sans', sans-serif;
+  --radius: 0px;
 }
-html,body{height:100%;background:var(--bg);color:var(--t1);font-family:var(--f);font-size:13px;line-height:1.5;overflow:hidden}
-::-webkit-scrollbar{width:4px;height:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--b2);border-radius:2px}
-button,input,select,textarea{font-family:var(--f);font-size:13px;color:var(--t1);outline:none}
-input::placeholder,textarea::placeholder{color:var(--t3)}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--font-sans);font-size:13px;overflow:hidden}
+button{cursor:pointer;font-family:var(--font-sans);border:none;outline:none}
+input,select,textarea{font-family:var(--font-sans);outline:none}
 a{color:inherit;text-decoration:none}
-select option{background:var(--s2)}
 
-.shell{display:grid;grid-template-columns:220px 1fr;height:100vh;overflow:hidden}
+/* ── Layout ── */
+.root{display:grid;grid-template-columns:220px 1fr;grid-template-rows:48px 1fr;height:100vh}
+.topbar{grid-column:1/-1;display:flex;align-items:center;border-bottom:1px solid var(--border);padding:0 20px;gap:16px;background:var(--bg1)}
+.sidebar{grid-row:2;border-right:1px solid var(--border);background:var(--bg1);display:flex;flex-direction:column;overflow:hidden}
+.main{grid-row:2;overflow-y:auto;background:var(--bg)}
 
-.sidebar{background:var(--s1);border-right:1px solid var(--b1);display:flex;flex-direction:column;overflow:hidden}
-.brand{padding:18px 16px 16px;border-bottom:1px solid var(--b1);display:flex;align-items:center;gap:10px;flex-shrink:0}
-.brand-mark{width:32px;height:32px;border-radius:6px;background:var(--green);display:grid;place-items:center;flex-shrink:0}
-.brand-mark svg{width:16px;height:16px}
-.brand-info{flex:1;min-width:0}
-.brand-title{font-size:13px;font-weight:700;letter-spacing:.3px;color:var(--t1)}
-.brand-sub{font-size:10px;color:var(--t3);font-family:var(--fm);margin-top:1px}
+/* ── Topbar ── */
+.logo{font-family:var(--font-mono);font-size:12px;font-weight:600;letter-spacing:.08em;color:var(--text)}
+.logo span{color:var(--accent)}
+.topbar-spacer{flex:1}
+.topbar-user{font-family:var(--font-mono);font-size:11px;color:var(--text3);display:flex;align-items:center;gap:8px}
+.btn-sm{font-size:11px;font-family:var(--font-mono);padding:4px 10px;background:var(--bg3);color:var(--text2);border:1px solid var(--border);letter-spacing:.05em;transition:all .15s}
+.btn-sm:hover{background:var(--bg2);color:var(--text);border-color:var(--border-bright)}
+.ws-indicator{width:6px;height:6px;background:var(--text3);display:inline-block}
+.ws-indicator.connected{background:var(--green)}
+.global-status{font-family:var(--font-mono);font-size:10px;color:var(--text3);display:flex;align-items:center;gap:6px}
 
-.nav{flex:1;overflow-y:auto;padding:8px}
-.nav-section{margin-bottom:6px}
-.nav-section-label{font-size:9px;font-weight:700;color:var(--t4);text-transform:uppercase;letter-spacing:1.2px;padding:8px 8px 4px}
-.nav-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--r2);color:var(--t3);cursor:pointer;transition:all .1s;font-size:12px;font-weight:500;user-select:none;position:relative}
-.nav-item:hover{background:var(--s2);color:var(--t2)}
-.nav-item.active{background:var(--s2);color:var(--t1)}
-.nav-item.active::after{content:'';position:absolute;left:0;top:25%;bottom:25%;width:2px;background:var(--green);border-radius:1px}
-.nav-icon{width:13px;height:13px;flex-shrink:0;opacity:.6}
-.nav-item.active .nav-icon,.nav-item:hover .nav-icon{opacity:1}
-.nav-dot{width:6px;height:6px;border-radius:50%;margin-left:auto;flex-shrink:0}
-.nd-ok{background:var(--green)}
-.nd-err{background:var(--red)}
-.nd-busy{background:var(--yellow);animation:pulse 1.4s ease-in-out infinite}
-@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.8)}}
-.nav-add-btn{display:flex;align-items:center;gap:7px;padding:6px 8px;color:var(--t3);cursor:pointer;font-size:11px;border-radius:var(--r2);border:1px dashed var(--b2);margin:4px 0;transition:all .15s}
-.nav-add-btn:hover{color:var(--t2);border-color:var(--b3)}
+/* ── Sidebar ── */
+.sidebar-section{padding:16px 12px 8px;font-family:var(--font-mono);font-size:10px;color:var(--text3);letter-spacing:.12em;text-transform:uppercase;border-bottom:1px solid var(--border)}
+.sidebar-item{display:flex;align-items:center;gap:10px;padding:9px 16px;cursor:pointer;transition:background .1s;font-size:12px;color:var(--text2);border-left:2px solid transparent}
+.sidebar-item:hover{background:var(--bg2);color:var(--text)}
+.sidebar-item.active{background:var(--bg2);color:var(--text);border-left-color:var(--accent)}
+.sidebar-item .dot{width:6px;height:6px;background:var(--border-bright);flex-shrink:0}
+.sidebar-item .dot.healthy{background:var(--green)}
+.sidebar-item .dot.degraded{background:var(--yellow)}
+.sidebar-item .dot.down,.sidebar-item .dot.unreachable{background:var(--red)}
+.sidebar-item .dot.not_configured{background:var(--text3)}
+.sidebar-footer{margin-top:auto;padding:12px;border-top:1px solid var(--border)}
+.sidebar-footer .version{font-family:var(--font-mono);font-size:10px;color:var(--text3)}
 
-.nav-bottom{padding:10px 8px 12px;border-top:1px solid var(--b1);flex-shrink:0}
-.token-row{display:flex;gap:5px;align-items:center}
-.token-input{flex:1;background:var(--s2);border:1px solid var(--b1);border-radius:var(--r2);padding:5px 8px;font-size:10px;font-family:var(--fm);color:var(--t2);transition:border-color .15s}
-.token-input:focus{border-color:var(--b3);color:var(--t1)}
-.token-btn{width:26px;height:26px;background:var(--s2);border:1px solid var(--b1);border-radius:var(--r2);cursor:pointer;display:grid;place-items:center;color:var(--t3);transition:all .15s;flex-shrink:0}
-.token-btn:hover{color:var(--green);border-color:var(--green)}
-.token-btn svg{width:11px;height:11px}
-
-.workspace{display:flex;flex-direction:column;overflow:hidden;min-width:0}
-.topbar{padding:0 20px;height:48px;border-bottom:1px solid var(--b1);display:flex;align-items:center;justify-content:space-between;flex-shrink:0;background:var(--bg)}
-.tb-left{display:flex;align-items:center;gap:10px}
-.tb-crumbs{display:flex;align-items:center;gap:5px;font-size:12px}
-.tb-sep{color:var(--t4);font-size:10px}
-.tb-root{color:var(--t3);font-family:var(--fm)}
-.tb-page{font-weight:600;color:var(--t1);font-family:var(--fm)}
-.tb-right{display:flex;align-items:center;gap:6px}
-.live-chip{display:flex;align-items:center;gap:5px;padding:3px 8px;border-radius:20px;font-size:9px;font-weight:600;font-family:var(--fm);color:var(--green);background:var(--green3);border:1px solid rgba(0,232,122,.12);letter-spacing:.5px;text-transform:uppercase}
-.live-dot{width:5px;height:5px;border-radius:50%;background:var(--green);animation:pulse 2s ease-in-out infinite}
-.health-chip{padding:3px 8px;border-radius:20px;font-size:9px;font-weight:600;font-family:var(--fm);border:1px solid;letter-spacing:.5px;text-transform:uppercase}
-.hc-ok{color:var(--green);background:var(--green3);border-color:rgba(0,232,122,.15)}
-.hc-warn{color:var(--yellow);background:var(--yellow2);border-color:rgba(245,197,66,.15)}
-.hc-err{color:var(--red);background:var(--red2);border-color:rgba(255,68,85,.15)}
-.icon-btn{width:28px;height:28px;background:transparent;border:1px solid var(--b1);border-radius:var(--r2);cursor:pointer;display:grid;place-items:center;color:var(--t3);transition:all .15s}
-.icon-btn:hover{color:var(--t1);border-color:var(--b2);background:var(--s2)}
-.icon-btn svg{width:12px;height:12px}
-
-.content{flex:1;overflow-y:auto;overflow-x:hidden}
-.page{display:none;padding:18px 20px}
+/* ── Main Content ── */
+.page{display:none;padding:0}
 .page.active{display:block}
+.page-header{padding:24px 28px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px}
+.page-title{font-size:16px;font-weight:500;letter-spacing:-.01em}
+.page-subtitle{font-family:var(--font-mono);font-size:11px;color:var(--text3);margin-top:3px}
+.page-actions{margin-left:auto;display:flex;gap:8px}
 
-.pg-hd{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px;gap:12px}
-.pg-title{font-size:15px;font-weight:700;letter-spacing:-.2px}
-.pg-sub{font-size:11px;color:var(--t3);margin-top:2px}
-.pg-actions{display:flex;gap:6px;align-items:center;flex-shrink:0}
+/* ── Cards & Grid ── */
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border)}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:var(--border)}
+.grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border)}
+.card{background:var(--bg);padding:20px 24px}
+.card-label{font-family:var(--font-mono);font-size:10px;color:var(--text3);letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px}
+.card-value{font-size:22px;font-weight:500;font-family:var(--font-mono);color:var(--text)}
+.card-sub{font-family:var(--font-mono);font-size:11px;color:var(--text3);margin-top:4px}
 
-.stats-row{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:16px}
-.stat-card{background:var(--s1);border:1px solid var(--b1);border-radius:var(--r);padding:12px 14px;position:relative;overflow:hidden}
-.stat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--b2)}
-.stat-card.sc-green::before{background:var(--green)}
-.stat-card.sc-blue::before{background:var(--blue)}
-.stat-card.sc-yellow::before{background:var(--yellow)}
-.stat-card.sc-purple::before{background:var(--purple)}
-.stat-card.sc-orange::before{background:var(--orange)}
-.stat-num{font-size:22px;font-weight:700;font-family:var(--fm);letter-spacing:-1px;line-height:1;margin-top:2px}
-.stat-label{font-size:9px;color:var(--t3);text-transform:uppercase;letter-spacing:.8px;margin-top:5px;font-weight:600}
+.section{padding:24px 28px}
+.section-title{font-family:var(--font-mono);font-size:11px;color:var(--text3);letter-spacing:.1em;text-transform:uppercase;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.section-title::after{content:'';flex:1;height:1px;background:var(--border)}
 
-.app-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:8px}
-.app-card{background:var(--s1);border:1px solid var(--b1);border-radius:var(--r);padding:14px;transition:border-color .15s;cursor:default}
-.app-card:hover{border-color:var(--b2)}
-.app-card-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px}
-.app-meta{display:flex;align-items:center;gap:9px}
-.app-icon{width:34px;height:34px;border-radius:7px;display:grid;place-items:center;font-size:14px;flex-shrink:0;border:1px solid}
-.ai-frappe{background:rgba(0,232,122,.07);border-color:rgba(0,232,122,.15)}
-.ai-fastapi{background:rgba(79,156,249,.07);border-color:rgba(79,156,249,.15)}
-.ai-docker{background:rgba(255,123,58,.07);border-color:rgba(255,123,58,.15)}
-.ai-generic{background:rgba(176,107,247,.07);border-color:rgba(176,107,247,.15)}
-.app-title{font-size:12px;font-weight:700}
-.app-host{font-size:10px;color:var(--t3);font-family:var(--fm);margin-top:2px}
-.app-status{display:flex;align-items:center;gap:5px}
-.sdot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
-.sdot-ok{background:var(--green);box-shadow:0 0 5px rgba(0,232,122,.4)}
-.sdot-err{background:var(--red)}
-.sdot-busy{background:var(--yellow);animation:pulse 1.4s ease-in-out infinite}
-.sdot-off{background:var(--t4)}
-.app-status-text{font-size:9px;color:var(--t3);font-family:var(--fm);text-transform:uppercase;letter-spacing:.5px}
-.app-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin:10px 0;padding:10px 0;border-top:1px solid var(--b1);border-bottom:1px solid var(--b1)}
-.app-metric{text-align:center}
-.app-metric-val{font-size:12px;font-weight:600;font-family:var(--fm)}
-.app-metric-lbl{font-size:8px;color:var(--t3);text-transform:uppercase;letter-spacing:.5px;margin-top:1px}
-.app-actions{display:flex;gap:4px;flex-wrap:wrap;padding-top:2px}
+/* ── Buttons ── */
+.btn{font-family:var(--font-mono);font-size:11px;padding:7px 14px;letter-spacing:.06em;cursor:pointer;border:1px solid;transition:all .15s;display:inline-flex;align-items:center;gap:6px}
+.btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.btn-primary:hover{background:#e05200}
+.btn-ghost{background:transparent;color:var(--text2);border-color:var(--border)}
+.btn-ghost:hover{background:var(--bg2);color:var(--text);border-color:var(--border-bright)}
+.btn-danger{background:transparent;color:var(--red);border-color:var(--red-dim)}
+.btn-danger:hover{background:var(--red-dim)}
+.btn-success{background:var(--green);color:#000;border-color:var(--green)}
+.btn-success:hover{background:#16a34a}
+.btn:disabled{opacity:.4;cursor:not-allowed}
 
-.btn{display:inline-flex;align-items:center;gap:5px;border-radius:var(--r2);padding:5px 11px;font-size:11px;font-weight:600;cursor:pointer;transition:all .1s;border:none;line-height:1;white-space:nowrap;font-family:var(--f)}
-.btn svg{width:10px;height:10px;flex-shrink:0}
-.btn-primary{background:var(--t1);color:#000}
-.btn-primary:hover{background:#d4d4e0}
-.btn-ghost{background:transparent;border:1px solid var(--b2);color:var(--t2)}
-.btn-ghost:hover{color:var(--t1);border-color:var(--b3);background:var(--s2)}
-.btn-green{background:var(--green2);border:1px solid rgba(0,232,122,.2);color:var(--green)}
-.btn-green:hover{background:rgba(0,232,122,.15)}
-.btn-red{background:var(--red2);border:1px solid rgba(255,68,85,.2);color:var(--red)}
-.btn-red:hover{background:rgba(255,68,85,.15)}
-.btn-yellow{background:var(--yellow2);border:1px solid rgba(245,197,66,.2);color:var(--yellow)}
-.btn-yellow:hover{background:rgba(245,197,66,.15)}
-.btn-blue{background:var(--blue2);border:1px solid rgba(79,156,249,.2);color:var(--blue)}
-.btn-blue:hover{background:rgba(79,156,249,.15)}
-.btn-purple{background:var(--purple2);border:1px solid rgba(176,107,247,.2);color:var(--purple)}
-.btn-purple:hover{background:rgba(176,107,247,.15)}
-.btn-orange{background:var(--orange2);border:1px solid rgba(255,123,58,.2);color:var(--orange)}
-.btn-orange:hover{background:rgba(255,123,58,.15)}
-.btn:disabled{opacity:.3;cursor:not-allowed}
-.btn-sm{padding:3px 8px;font-size:10px}
-.btn-lg{padding:8px 16px;font-size:13px}
+/* ── Status Badges ── */
+.badge{font-family:var(--font-mono);font-size:10px;padding:2px 8px;letter-spacing:.06em;display:inline-flex;align-items:center;gap:5px}
+.badge::before{content:'';width:5px;height:5px;border-radius:50%}
+.badge.healthy,.badge.active,.badge.success{background:var(--green-dim);color:var(--green)}
+.badge.healthy::before,.badge.active::before,.badge.success::before{background:var(--green)}
+.badge.degraded{background:var(--yellow-dim);color:var(--yellow)}
+.badge.degraded::before{background:var(--yellow)}
+.badge.down,.badge.failed,.badge.unreachable,.badge.unknown,.badge.inactive{background:var(--red-dim);color:var(--red)}
+.badge.down::before,.badge.failed::before,.badge.unreachable::before,.badge.unknown::before,.badge.inactive::before{background:var(--red)}
+.badge.running{background:var(--blue-dim);color:var(--blue)}
+.badge.running::before{background:var(--blue);animation:blink .8s infinite}
+.badge.not_configured,.badge.pending{background:var(--bg3);color:var(--text3)}
+.badge.not_configured::before,.badge.pending::before{background:var(--text3)}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
 
-.card{background:var(--s1);border:1px solid var(--b1);border-radius:var(--r);overflow:hidden}
-.card-head{padding:10px 14px;border-bottom:1px solid var(--b1);display:flex;align-items:center;justify-content:space-between}
-.card-head-title{font-size:10px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.8px}
-.card-body{padding:14px}
-
+/* ── Tables ── */
+.table-wrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse}
-th{padding:7px 12px;text-align:left;font-size:9px;font-weight:700;color:var(--t4);text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid var(--b1)}
-td{padding:9px 12px;border-bottom:1px solid var(--b1);font-size:11px;vertical-align:middle;color:var(--t2)}
+th{font-family:var(--font-mono);font-size:10px;color:var(--text3);letter-spacing:.1em;text-transform:uppercase;text-align:left;padding:8px 16px;border-bottom:1px solid var(--border);font-weight:400}
+td{padding:10px 16px;border-bottom:1px solid var(--border);font-size:12px;color:var(--text2)}
+tr:hover td{background:var(--bg1)}
 tr:last-child td{border-bottom:none}
-tr:hover td{background:rgba(255,255,255,.01)}
 
-.tag{display:inline-flex;align-items:center;padding:2px 6px;border-radius:3px;font-size:9px;font-weight:700;font-family:var(--fm);border:1px solid;letter-spacing:.3px;text-transform:uppercase}
-.tag-green{color:var(--green);background:var(--green3);border-color:rgba(0,232,122,.2)}
-.tag-red{color:var(--red);background:var(--red2);border-color:rgba(255,68,85,.2)}
-.tag-yellow{color:var(--yellow);background:var(--yellow2);border-color:rgba(245,197,66,.2)}
-.tag-blue{color:var(--blue);background:var(--blue2);border-color:rgba(79,156,249,.2)}
-.tag-gray{color:var(--t3);background:var(--s2);border-color:var(--b2)}
-.tag-purple{color:var(--purple);background:var(--purple2);border-color:rgba(176,107,247,.2)}
-.tag-orange{color:var(--orange);background:var(--orange2);border-color:rgba(255,123,58,.2)}
+/* ── Forms ── */
+.form-group{margin-bottom:16px}
+.form-label{font-family:var(--font-mono);font-size:10px;color:var(--text3);letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px;display:block}
+.form-input{width:100%;background:var(--bg1);border:1px solid var(--border);color:var(--text);padding:8px 12px;font-family:var(--font-mono);font-size:12px;transition:border .15s}
+.form-input:focus{border-color:var(--border-bright)}
+.form-input::placeholder{color:var(--text3)}
+select.form-input option{background:var(--bg2)}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.form-hint{font-family:var(--font-mono);font-size:10px;color:var(--text3);margin-top:4px}
 
-.mono{font-family:var(--fm)}
-.muted{color:var(--t3)}
-.green{color:var(--green)}
-.red{color:var(--red)}
-.yellow{color:var(--yellow)}
-.blue{color:var(--blue)}
+/* ── Log Terminal ── */
+.terminal{background:#050505;border:1px solid var(--border);font-family:var(--font-mono);font-size:11px;padding:12px;height:340px;overflow-y:auto;color:#ccc;line-height:1.6;white-space:pre-wrap;word-break:break-all}
+.terminal .log-info{color:#4ade80}
+.terminal .log-warn{color:#fbbf24}
+.terminal .log-error{color:#f87171}
+.terminal .log-dim{color:var(--text3)}
 
-.log-box{background:#030305;border:1px solid var(--b1);border-radius:var(--r);padding:12px 14px;font-family:var(--fm);font-size:11px;line-height:1.75;overflow-y:auto;height:420px;white-space:pre-wrap;word-break:break-all;color:#8899aa}
-.le{color:var(--red)}.lw{color:var(--yellow)}.li{color:var(--blue)}.lo{color:var(--green)}.ld{color:var(--t3)}
+/* ── App Detail Views ── */
+.app-hero{padding:24px 28px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:20px}
+.app-icon{width:40px;height:40px;background:var(--accent-dim);border:1px solid var(--accent);display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);font-size:14px;font-weight:600;color:var(--accent);flex-shrink:0}
+.app-info{flex:1}
+.app-name{font-size:17px;font-weight:500}
+.app-meta{font-family:var(--font-mono);font-size:11px;color:var(--text3);margin-top:4px;display:flex;gap:16px}
+.app-tabs{display:flex;border-bottom:1px solid var(--border);padding:0 28px}
+.tab{font-family:var(--font-mono);font-size:11px;padding:12px 0;margin-right:24px;cursor:pointer;color:var(--text3);letter-spacing:.06em;border-bottom:2px solid transparent;transition:all .15s}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--text);border-bottom-color:var(--accent)}
+.tab-content{display:none}
+.tab-content.active{display:block}
 
-.meter{margin-bottom:10px}
-.meter-row{display:flex;justify-content:space-between;margin-bottom:3px;font-size:10px}
-.meter-label{color:var(--t3);font-family:var(--fm)}
-.meter-val{font-family:var(--fm);font-weight:600}
-.meter-track{height:2px;background:var(--b2);border-radius:1px;overflow:hidden}
-.meter-fill{height:100%;border-radius:1px;transition:width .6s ease}
-.mf-g{background:var(--green)}.mf-y{background:var(--yellow)}.mf-r{background:var(--red)}
+/* ── Service Grid ── */
+.services-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1px;background:var(--border)}
+.service-item{background:var(--bg);padding:12px 16px;display:flex;align-items:center;justify-content:space-between}
+.service-name{font-family:var(--font-mono);font-size:11px;color:var(--text2)}
+.service-state{font-family:var(--font-mono);font-size:10px}
+.service-state.active{color:var(--green)}
+.service-state.inactive,.service-state.failed,.service-state.unknown{color:var(--red)}
 
-.tabs{display:flex;gap:1px;background:var(--s2);border-radius:5px;border:1px solid var(--b1);padding:2px;margin-bottom:12px}
-.tab{flex:1;padding:5px 12px;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;text-align:center;color:var(--t3);transition:all .1s;border:none;background:transparent;font-family:var(--f)}
-.tab.active{background:var(--s3);color:var(--t1);border:1px solid var(--b2)}
+/* ── Metrics Bar ── */
+.metrics-row{display:flex;gap:1px;background:var(--border)}
+.metric-card{background:var(--bg1);padding:16px 20px;flex:1}
+.metric-label{font-family:var(--font-mono);font-size:10px;color:var(--text3);letter-spacing:.1em}
+.metric-value{font-family:var(--font-mono);font-size:18px;font-weight:500;margin-top:6px}
+.metric-bar{height:2px;background:var(--border);margin-top:8px}
+.metric-bar-fill{height:100%;background:var(--accent);transition:width .5s}
 
-.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:200;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(2px)}
-.modal-bg.open{display:flex}
-.modal{background:var(--s1);border:1px solid var(--b2);border-radius:8px;width:100%;max-width:520px;max-height:90vh;display:flex;flex-direction:column;overflow:hidden}
-.modal-wide{max-width:700px}
-.modal-xl{max-width:900px}
-.modal-head{padding:16px 18px 12px;border-bottom:1px solid var(--b1);display:flex;align-items:flex-start;justify-content:space-between;flex-shrink:0}
-.modal-title{font-size:13px;font-weight:700}
-.modal-sub{font-size:10px;color:var(--t3);margin-top:2px}
-.modal-x{width:22px;height:22px;display:grid;place-items:center;border-radius:4px;cursor:pointer;color:var(--t3);transition:all .1s;background:transparent;border:none;flex-shrink:0}
-.modal-x:hover{background:var(--s2);color:var(--t1)}
-.modal-body{padding:16px 18px;overflow-y:auto;flex:1}
-.modal-foot{padding:12px 18px;border-top:1px solid var(--b1);display:flex;justify-content:flex-end;gap:6px;flex-shrink:0}
+/* ── Deploy Log Live ── */
+.deploy-status-bar{padding:12px 28px;background:var(--bg1);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;font-family:var(--font-mono);font-size:11px;color:var(--text2)}
 
-.form-row{margin-bottom:10px}
-.form-label{display:block;font-size:9px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px}
-.form-input{width:100%;background:var(--s2);border:1px solid var(--b2);border-radius:var(--r2);padding:7px 9px;color:var(--t1);transition:border-color .15s;font-size:12px}
-.form-input:focus{border-color:var(--b3)}
-.form-select{width:100%;background:var(--s2);border:1px solid var(--b2);border-radius:var(--r2);padding:7px 9px;color:var(--t1);transition:border-color .15s;font-size:12px;cursor:pointer}
-.form-select:focus{border-color:var(--b3)}
-.form-textarea{width:100%;background:var(--s2);border:1px solid var(--b2);border-radius:var(--r2);padding:8px 9px;color:var(--t1);resize:vertical;font-family:var(--fm);font-size:11px;line-height:1.75;transition:border-color .15s}
-.form-textarea:focus{border-color:var(--b3)}
-.form-hint{font-size:9px;color:var(--t3);margin-top:3px;font-family:var(--fm)}
-.form-2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.form-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
-.divider{height:1px;background:var(--b1);margin:12px 0}
-.section-label{font-size:9px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px}
+/* ── Login ── */
+#login-screen{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:100}
+.login-box{width:360px}
+.login-logo{font-family:var(--font-mono);font-size:11px;color:var(--text3);letter-spacing:.15em;text-transform:uppercase;margin-bottom:32px}
+.login-logo strong{color:var(--text);font-weight:500;display:block;font-size:20px;letter-spacing:-.02em;font-family:var(--font-sans);margin-bottom:4px}
+.login-box h2{font-size:14px;font-weight:500;margin-bottom:24px;color:var(--text2)}
+.login-error{font-family:var(--font-mono);font-size:11px;color:var(--red);background:var(--red-dim);padding:8px 12px;margin-bottom:16px;display:none}
+.login-box .btn{width:100%;justify-content:center;padding:10px;margin-top:8px;font-size:12px}
+.login-divider{height:1px;background:var(--border);margin:24px 0}
 
-.cred-item{display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--s2);border-radius:var(--r2);border:1px solid var(--b1);margin-bottom:3px}
-.cred-key{font-family:var(--fm);font-size:10px;color:var(--blue);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
-.cred-val{font-family:var(--fm);font-size:10px;color:var(--t2);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cred-secret{color:var(--t4)}
-.cred-del{width:18px;height:18px;display:grid;place-items:center;border-radius:3px;cursor:pointer;color:var(--t4);background:transparent;border:none;flex-shrink:0;transition:all .1s}
-.cred-del:hover{color:var(--red);background:var(--red2)}
-.cred-del svg{width:10px;height:10px}
+/* ── Config Panel ── */
+.config-panel{padding:24px 28px;max-width:720px}
+.env-editor{font-family:var(--font-mono);font-size:11px}
+.env-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px;align-items:center}
+.env-key{color:var(--text3);padding:6px 0;word-break:break-all}
+.env-val{background:var(--bg1);border:1px solid var(--border);color:var(--text);padding:5px 8px;font-family:var(--font-mono);font-size:11px}
+.env-val:focus{border-color:var(--border-bright)}
 
-.job-stream{background:#030305;border:1px solid var(--b1);border-radius:var(--r);padding:10px 12px;font-family:var(--fm);font-size:10px;line-height:1.75;max-height:360px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;color:#7a8b99}
+/* ── Commit List ── */
+.commit-item{padding:12px 0;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:12px}
+.commit-item:last-child{border-bottom:none}
+.commit-sha{font-family:var(--font-mono);font-size:11px;color:var(--accent);width:56px;flex-shrink:0}
+.commit-msg{font-size:12px;color:var(--text)}
+.commit-meta{font-family:var(--font-mono);font-size:10px;color:var(--text3);margin-top:3px}
 
-.spinner{width:12px;height:12px;border:2px solid var(--b2);border-top-color:var(--green);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
-@keyframes spin{to{transform:rotate(360deg)}}
-.loading{display:flex;align-items:center;gap:8px;color:var(--t3);padding:14px 0;font-size:11px}
+/* ── Scrollbar ── */
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border-bright)}
+::-webkit-scrollbar-thumb:hover{background:#555}
 
-.empty{padding:36px;text-align:center;color:var(--t3)}
-.empty-icon{font-size:24px;margin-bottom:8px}
-.empty-title{font-size:12px;font-weight:600;color:var(--t2);margin-bottom:3px}
-.empty-text{font-size:10px}
+/* ── Flash ── */
+.flash{position:fixed;top:12px;right:12px;z-index:999;font-family:var(--font-mono);font-size:11px;padding:10px 16px;background:var(--bg2);border:1px solid var(--border);color:var(--text);min-width:200px;animation:slideIn .2s ease;letter-spacing:.04em}
+.flash.success{border-color:var(--green);color:var(--green)}
+.flash.error{border-color:var(--red);color:var(--red)}
+@keyframes slideIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}
 
-input[type="checkbox"]{accent-color:var(--green);width:12px;height:12px;cursor:pointer}
-.flex{display:flex;align-items:center}
-.gap-4{gap:4px}
-.gap-6{gap:6px}
-.gap-8{gap:8px}
-.ml-auto{margin-left:auto}
-.w-full{width:100%}
-code{font-family:var(--fm);font-size:11px;background:var(--s2);padding:1px 4px;border-radius:3px;color:var(--blue)}
+/* ── Empty ── */
+.empty{padding:48px 28px;text-align:center;font-family:var(--font-mono);font-size:11px;color:var(--text3);letter-spacing:.06em}
+.empty strong{display:block;font-size:14px;color:var(--text2);margin-bottom:8px;font-family:var(--font-sans);font-weight:400}
 
-.script-item{padding:7px 9px;border-radius:var(--r2);cursor:pointer;font-size:11px;font-family:var(--fm);color:var(--t2);display:flex;align-items:center;gap:7px;transition:all .1s;border:1px solid transparent;margin-bottom:2px}
-.script-item:hover{background:var(--s2);color:var(--t1)}
-.script-item.active{background:var(--s2);color:var(--t1);border-color:var(--b2)}
-.script-badge{font-size:8px;padding:1px 5px;border-radius:3px;font-family:var(--fm);font-weight:700;text-transform:uppercase;letter-spacing:.3px;margin-left:auto}
-.sb-setup{background:var(--yellow2);color:var(--yellow);border:1px solid rgba(245,197,66,.2)}
-.sb-refresh{background:var(--green2);color:var(--green);border:1px solid rgba(0,232,122,.2)}
-.sb-custom{background:var(--blue2);color:var(--blue);border:1px solid rgba(79,156,249,.2)}
+/* ── Keys panel ── */
+.key-item{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--border)}
+.key-name{font-family:var(--font-mono);font-size:12px;color:var(--text);flex:1}
+.key-path{font-family:var(--font-mono);font-size:10px;color:var(--text3)}
+.key-date{font-family:var(--font-mono);font-size:10px;color:var(--text3);width:120px}
 
-.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+/* ── Overview stats ── */
+.overview-hero{padding:28px;border-bottom:1px solid var(--border)}
+.overview-title{font-size:22px;font-weight:300;letter-spacing:-.02em;color:var(--text)}
+.overview-title strong{font-weight:600;color:var(--accent)}
+.overview-meta{font-family:var(--font-mono);font-size:11px;color:var(--text3);margin-top:6px}
 
-.warn-banner{background:var(--yellow2);border:1px solid rgba(245,197,66,.2);border-radius:var(--r);padding:9px 12px;margin-bottom:12px;display:flex;align-items:center;gap:8px;font-size:11px;color:var(--yellow)}
-.info-banner{background:var(--blue2);border:1px solid rgba(79,156,249,.2);border-radius:var(--r);padding:9px 12px;margin-bottom:12px;font-size:10px;color:var(--blue);font-family:var(--fm);line-height:1.6}
+/* ── Deploy history ── */
+.deploy-item{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);cursor:pointer;transition:background .1s}
+.deploy-item:hover{background:var(--bg1)}
+.deploy-id{font-family:var(--font-mono);font-size:10px;color:var(--text3);width:40px}
+.deploy-app{font-family:var(--font-mono);font-size:11px;color:var(--text);width:140px}
+.deploy-trigger{font-family:var(--font-mono);font-size:10px;color:var(--text3);width:70px}
+.deploy-time{font-family:var(--font-mono);font-size:10px;color:var(--text3);margin-left:auto}
+.deploy-dur{font-family:var(--font-mono);font-size:10px;color:var(--text3);width:60px;text-align:right}
 
-.cfg-row{display:flex;gap:6px;margin-bottom:4px;font-size:11px}
-.cfg-key{color:var(--blue);font-family:var(--fm);min-width:140px;flex-shrink:0;font-size:10px;font-weight:600}
-.cfg-val{color:var(--t2);font-family:var(--fm);font-size:10px;word-break:break-all}
+/* ── Detail panel overlay ── */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:50;display:none}
+.overlay.open{display:flex;align-items:flex-end;justify-content:flex-end}
+.detail-panel{width:640px;height:100vh;background:var(--bg1);border-left:1px solid var(--border);display:flex;flex-direction:column;animation:slideLeft .2s ease}
+.detail-header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px}
+.detail-header h3{font-size:13px;font-weight:500;flex:1}
+.detail-body{flex:1;overflow-y:auto;padding:20px}
+@keyframes slideLeft{from{transform:translateX(40px);opacity:0}to{transform:translateX(0);opacity:1}}
 
-.commit-box{background:var(--s2);border:1px solid var(--b1);border-radius:var(--r2);padding:10px 12px;margin-bottom:8px}
-.commit-sha{font-family:var(--fm);font-size:12px;font-weight:700;color:var(--green);margin-bottom:3px}
-.commit-msg{font-size:11px;color:var(--t1);margin-bottom:4px}
-.commit-meta{font-size:10px;color:var(--t3)}
-
-.run-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--r2);margin-bottom:2px;background:var(--s2);font-size:10px}
-.run-icon{width:16px;height:16px;border-radius:50%;display:grid;place-items:center;font-size:9px;font-weight:700;flex-shrink:0}
-.run-name{flex:1;color:var(--t2);font-size:10px}
-.run-sha{font-family:var(--fm);color:var(--t3)}
-
-.toggle-wrap{position:relative;width:30px;height:16px;cursor:pointer;flex-shrink:0}
-.toggle-wrap input{opacity:0;width:0;height:0;position:absolute}
-.toggle-track{width:30px;height:16px;background:var(--b2);border-radius:8px;transition:background .2s;border:1px solid var(--b3)}
-.toggle-wrap input:checked+.toggle-track{background:var(--green);border-color:var(--green)}
-.toggle-thumb{position:absolute;top:2px;left:2px;width:12px;height:12px;background:white;border-radius:50%;transition:transform .2s;pointer-events:none}
-.toggle-wrap input:checked~.toggle-thumb{transform:translateX(14px)}
-
-.badge-env{display:inline-flex;align-items:center;padding:1px 5px;border-radius:3px;font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;font-family:var(--fm);border:1px solid}
+/* ── Pulse animation ── */
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+.pulse{animation:pulse 2s infinite}
 </style>
 </head>
 <body>
-<div class="shell">
 
-<aside class="sidebar">
-  <div class="brand">
-    <div class="brand-mark">
-      <svg viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="2.5"><path d="M2 4l6-2 6 2v5c0 3-3 5-6 5s-6-2-6-5V4z"/></svg>
+<!-- Login Screen -->
+<div id="login-screen">
+  <div class="login-box">
+    <div class="login-logo">
+      <strong>The Apprentice Project</strong>
+      DevOps Dashboard
     </div>
-    <div class="brand-info">
-      <div class="brand-title">TAP Deploy</div>
-      <div class="brand-sub">infra · v3</div>
+    <div id="login-error" class="login-error"></div>
+    <div id="setup-section" style="display:none">
+      <h2>Create Admin Account</h2>
+      <div class="form-group">
+        <label class="form-label">Username</label>
+        <input class="form-input" id="setup-username" type="text" placeholder="admin" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Password</label>
+        <input class="form-input" id="setup-password" type="password" placeholder="minimum 8 characters">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Confirm Password</label>
+        <input class="form-input" id="setup-confirm" type="password" placeholder="repeat password">
+      </div>
+      <button class="btn btn-primary" onclick="doSetup()">CREATE ACCOUNT →</button>
     </div>
-  </div>
-
-  <nav class="nav">
-    <div class="nav-section">
-      <div class="nav-section-label">Platform</div>
-      <div class="nav-item active" id="ni-overview" onclick="nav('overview')">
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-        Overview
+    <div id="login-section" style="display:none">
+      <h2>Sign in</h2>
+      <div class="form-group">
+        <label class="form-label">Username</label>
+        <input class="form-input" id="login-username" type="text" placeholder="admin" autocomplete="username" onkeydown="if(event.key==='Enter')doLogin()">
       </div>
-      <div class="nav-item" id="ni-deployments" onclick="nav('deployments')">
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-        Deployments
+      <div class="form-group">
+        <label class="form-label">Password</label>
+        <input class="form-input" id="login-password" type="password" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
       </div>
-      <div class="nav-item" id="ni-jobs" onclick="nav('jobs')">
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>
-        Jobs
-      </div>
-      <div class="nav-item" id="ni-metrics" onclick="nav('metrics')">
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-        Metrics
-      </div>
-    </div>
-
-    <div class="nav-section">
-      <div class="nav-section-label">Applications</div>
-      <div id="appNavList"></div>
-      <div class="nav-add-btn" onclick="openAddApp()">
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        Add application
-      </div>
-    </div>
-
-    <div class="nav-section">
-      <div class="nav-section-label">Tools</div>
-      <div class="nav-item" id="ni-logs" onclick="nav('logs')">
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-        Live Logs
-      </div>
-      <div class="nav-item" id="ni-scripts" onclick="nav('scripts')">
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-        Scripts
-      </div>
-      <div class="nav-item" id="ni-settings" onclick="nav('settings')">
-        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
-        Settings
-      </div>
-    </div>
-  </nav>
-
-  <div class="nav-bottom">
-    <div class="token-row">
-      <input type="password" class="token-input" id="tokenInput" placeholder="Auth token" />
-      <button class="token-btn" onclick="saveToken()">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-      </button>
+      <button class="btn btn-primary" onclick="doLogin()">SIGN IN →</button>
     </div>
   </div>
-</aside>
+</div>
 
-<div class="workspace">
+<!-- Main App -->
+<div class="root" id="app" style="display:none">
+
+  <!-- Topbar -->
   <div class="topbar">
-    <div class="tb-left">
-      <div class="tb-crumbs">
-        <span class="tb-root">TAP</span>
-        <span class="tb-sep">/</span>
-        <span class="tb-page" id="tbPage">overview</span>
-      </div>
+    <div class="logo"><span>TAP</span> / DevOps</div>
+    <div style="width:1px;height:20px;background:var(--border);margin:0 4px"></div>
+    <div class="global-status">
+      <span class="ws-indicator" id="ws-dot"></span>
+      <span id="ws-label" style="font-family:var(--font-mono);font-size:10px;color:var(--text3)">connecting</span>
     </div>
-    <div class="tb-right">
-      <div class="live-chip"><span class="live-dot"></span>live</div>
-      <div class="health-chip hc-ok" id="globalHealth">— / —</div>
-      <button class="icon-btn" onclick="refreshAll()" title="Refresh">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-      </button>
+    <div class="topbar-spacer"></div>
+    <div class="topbar-user">
+      <span id="topbar-username" style="color:var(--text2)"></span>
+      <button class="btn-sm" onclick="doLogout()">LOGOUT</button>
     </div>
   </div>
 
-  <div class="content">
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-section">Navigation</div>
+    <div class="sidebar-item active" onclick="showPage('overview')" id="nav-overview">
+      <div class="dot healthy"></div> Overview
+    </div>
+    <div class="sidebar-section" style="margin-top:4px">Applications</div>
+    <div id="sidebar-apps"></div>
+    <div class="sidebar-section" style="margin-top:4px">Settings</div>
+    <div class="sidebar-item" onclick="showPage('keys')" id="nav-keys">
+      <div class="dot"></div> SSH Keys
+    </div>
+    <div class="sidebar-item" onclick="showPage('deployments')" id="nav-deployments">
+      <div class="dot"></div> All Deployments
+    </div>
+    <div class="sidebar-footer">
+      <div class="version">v1.0.0 · TAP DevOps</div>
+    </div>
+  </div>
 
+  <!-- Main -->
+  <div class="main">
+
+    <!-- Overview Page -->
     <div class="page active" id="page-overview">
-      <div class="pg-hd">
-        <div><div class="pg-title">Overview</div><div class="pg-sub">All applications at a glance</div></div>
-        <div class="pg-actions">
-          <button class="btn btn-primary btn-sm" onclick="openAddApp()">+ Add App</button>
-        </div>
+      <div class="overview-hero">
+        <div class="overview-title">The Apprentice Project<br><strong>Infrastructure</strong></div>
+        <div class="overview-meta" id="overview-meta">Loading status...</div>
       </div>
-      <div class="stats-row" id="statsRow"></div>
-      <div class="app-grid" id="appGrid"></div>
-      <div id="emptyState" style="display:none">
-        <div class="empty"><div class="empty-icon">🚀</div><div class="empty-title">No applications yet</div><div class="empty-text">Add your first application to start deploying</div><br><button class="btn btn-primary btn-lg" onclick="openAddApp()">Add Application</button></div>
+      <div class="grid-4" id="overview-stats" style="border-top:1px solid var(--border)">
+        <div class="card"><div class="card-label">Applications</div><div class="card-value" id="stat-apps">3</div><div class="card-sub">configured</div></div>
+        <div class="card"><div class="card-label">Healthy</div><div class="card-value" id="stat-healthy" style="color:var(--green)">—</div><div class="card-sub">services up</div></div>
+        <div class="card"><div class="card-label">Deployments</div><div class="card-value" id="stat-deploys">—</div><div class="card-sub">all time</div></div>
+        <div class="card"><div class="card-label">Last Deploy</div><div class="card-value" id="stat-last" style="font-size:13px;margin-top:4px">—</div><div class="card-sub" id="stat-last-app">—</div></div>
+      </div>
+      <div class="section">
+        <div class="section-title">Applications</div>
+        <div id="overview-apps-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--border)"></div>
+      </div>
+      <div class="section">
+        <div class="section-title">Recent Deployments</div>
+        <div id="overview-recent-deploys"></div>
       </div>
     </div>
 
+    <!-- App Page Template -->
+    <div class="page" id="page-app-plg"><!-- filled dynamically --></div>
+    <div class="page" id="page-app-lms"><!-- filled dynamically --></div>
+    <div class="page" id="page-app-rag"><!-- filled dynamically --></div>
+
+    <!-- SSH Keys Page -->
+    <div class="page" id="page-keys">
+      <div class="page-header">
+        <div>
+          <div class="page-title">SSH Keys</div>
+          <div class="page-subtitle">Manage private keys for server access</div>
+        </div>
+        <div class="page-actions">
+          <button class="btn btn-primary" onclick="document.getElementById('key-upload-input').click()">UPLOAD KEY</button>
+          <input type="file" id="key-upload-input" style="display:none" accept=".pem,.key" onchange="uploadKey(this)">
+        </div>
+      </div>
+      <div class="section">
+        <div class="form-row" style="max-width:400px;margin-bottom:20px">
+          <div class="form-group">
+            <label class="form-label">Key Name</label>
+            <input class="form-input" id="key-name-input" placeholder="e.g. azure-vm-prod">
+          </div>
+        </div>
+        <div id="keys-list"><div class="empty"><strong>No SSH Keys</strong>Upload a .pem or .key file to get started</div></div>
+      </div>
+    </div>
+
+    <!-- All Deployments Page -->
     <div class="page" id="page-deployments">
-      <div class="pg-hd">
-        <div><div class="pg-title">Deployments</div><div class="pg-sub">Full deployment history</div></div>
-        <div class="pg-actions">
-          <select id="deployFilterApp" onchange="loadDeployments()" class="form-select" style="width:130px">
-            <option value="">All Apps</option>
-          </select>
+      <div class="page-header">
+        <div>
+          <div class="page-title">Deployment History</div>
+          <div class="page-subtitle">All deployments across applications</div>
+        </div>
+        <div class="page-actions">
+          <button class="btn btn-ghost" onclick="loadAllDeployments()">↺ REFRESH</button>
         </div>
       </div>
-      <div class="card">
-        <table>
-          <thead><tr><th>App</th><th>Commit</th><th>Branch</th><th>Status</th><th>By</th><th>Duration</th><th>Time</th><th>Message</th></tr></thead>
-          <tbody id="deployTable"></tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="page" id="page-jobs">
-      <div class="pg-hd">
-        <div><div class="pg-title">Jobs</div><div class="pg-sub">Setup, refresh and background task history</div></div>
-        <div class="pg-actions">
-          <button class="btn btn-ghost btn-sm" onclick="loadJobs()">Refresh</button>
-        </div>
-      </div>
-      <div id="activeJobsBanner"></div>
-      <div class="card">
-        <table>
-          <thead><tr><th>App</th><th>Type</th><th>Status</th><th>By</th><th>Duration</th><th>Time</th><th></th></tr></thead>
-          <tbody id="jobTable"></tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="page" id="page-metrics">
-      <div class="pg-hd">
-        <div><div class="pg-title">Metrics</div><div class="pg-sub">Server resource usage</div></div>
-        <button class="btn btn-ghost btn-sm" onclick="loadMetrics()">Refresh</button>
-      </div>
-      <div class="app-grid" id="metricsGrid"></div>
-    </div>
-
-    <div class="page" id="page-logs">
-      <div class="pg-hd">
-        <div><div class="pg-title">Live Logs</div><div class="pg-sub">Real-time log output</div></div>
-        <div class="pg-actions">
-          <select id="logAppSel" class="form-select" style="width:140px"></select>
-          <select id="logLines" class="form-select" style="width:90px">
-            <option value="100">100 lines</option>
-            <option value="200" selected>200 lines</option>
-            <option value="500">500 lines</option>
-            <option value="1000">1000 lines</option>
-          </select>
-          <button class="btn btn-ghost btn-sm" onclick="fetchLogs()">Fetch</button>
-        </div>
-      </div>
-      <div class="log-box" id="logViewer"><span class="muted">Select an app and click Fetch</span></div>
-      <div class="flex gap-8" style="margin-top:7px">
-        <span class="muted" style="font-size:9px;font-family:var(--fm)" id="logMeta"></span>
-        <label class="flex gap-4 ml-auto" style="font-size:10px;color:var(--t2);cursor:pointer">
-          <input type="checkbox" id="logAutoScroll" checked> Auto-scroll
-        </label>
-      </div>
-    </div>
-
-    <div class="page" id="page-scripts">
-      <div class="pg-hd">
-        <div><div class="pg-title">Scripts</div><div class="pg-sub">Manage setup, refresh and custom scripts</div></div>
-        <div class="pg-actions">
-          <button class="btn btn-green btn-sm" onclick="openNewScript()">+ New Script</button>
-        </div>
-      </div>
-      <div class="form-2" style="gap:10px;align-items:start">
-        <div class="card">
-          <div class="card-head"><span class="card-head-title">Scripts</span></div>
-          <div id="scriptListEl" style="padding:6px"></div>
-        </div>
-        <div class="card">
-          <div class="card-head">
-            <span class="card-head-title" id="scriptEdTitle">select a script</span>
-            <div class="flex gap-4">
-              <button class="btn btn-red btn-sm" id="scriptDelBtn" onclick="deleteActiveScript()" style="display:none">Delete</button>
-              <button class="btn btn-green btn-sm" id="scriptSaveBtn" onclick="saveScript()" style="display:none">Save</button>
-            </div>
-          </div>
-          <div class="card-body" style="padding:8px">
-            <textarea class="form-textarea" id="scriptEditor" style="min-height:460px;display:none"></textarea>
-            <div id="scriptEmptyMsg" class="muted" style="font-size:11px;text-align:center;padding:40px">← Select a script to edit</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="page" id="page-settings">
-      <div class="pg-hd">
-        <div><div class="pg-title">Settings</div><div class="pg-sub">Platform configuration</div></div>
-      </div>
-      <div style="max-width:560px;display:flex;flex-direction:column;gap:10px">
-        <div class="card">
-          <div class="card-head"><span class="card-head-title">SSH Keys</span><button class="btn btn-ghost btn-sm" onclick="openAddSSHKey()">Add key</button></div>
-          <div id="sshKeyListEl" style="padding:6px"></div>
-        </div>
-        <div class="card">
-          <div class="card-head"><span class="card-head-title">Environment</span></div>
-          <div class="card-body">
-            <div class="info-banner">DASHBOARD_PORT: <strong>${location.port || 4000}</strong> &nbsp;|&nbsp; API: <strong>${location.origin}</strong></div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="page" id="page-app-detail">
-      <div id="appDetailContent"></div>
+      <div id="all-deployments-list"></div>
     </div>
 
   </div>
 </div>
-</div>
 
-<!-- Add/Edit App Modal -->
-<div class="modal-bg" id="modalApp">
-<div class="modal modal-xl">
-  <div class="modal-head">
-    <div><div class="modal-title" id="modalAppTitle">Add Application</div><div class="modal-sub">Configure server connection and deployment pipeline</div></div>
-    <button class="modal-x" onclick="closeModal('modalApp')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-  </div>
-  <div class="modal-body">
-    <input type="hidden" id="appEditId">
-    <div class="tabs">
-      <button class="tab active" onclick="switchAppTab('basic', this)">Basic</button>
-      <button class="tab" onclick="switchAppTab('scripts', this)">Scripts & Deploy</button>
-      <button class="tab" onclick="switchAppTab('health', this)">Health & Logs</button>
-      <button class="tab" onclick="switchAppTab('advanced', this)">Advanced</button>
+<!-- Deploy Log Overlay -->
+<div class="overlay" id="deploy-overlay">
+  <div class="detail-panel">
+    <div class="detail-header">
+      <h3 id="deploy-overlay-title">Deployment Log</h3>
+      <span id="deploy-overlay-badge" class="badge running">running</span>
+      <button class="btn btn-ghost btn-sm" style="margin-left:8px" onclick="closeDeployOverlay()">✕</button>
     </div>
-
-    <div id="appTab-basic">
-      <div class="form-2">
-        <div class="form-row">
-          <label class="form-label">App ID *</label>
-          <input class="form-input mono" id="appId" placeholder="tap / rag / plg">
-          <div class="form-hint">lowercase, no spaces — used in scripts &amp; API paths</div>
-        </div>
-        <div class="form-row">
-          <label class="form-label">Display Name *</label>
-          <input class="form-input" id="appName" placeholder="TAP LMS">
-        </div>
-      </div>
-      <div class="form-2">
-        <div class="form-row">
-          <label class="form-label">App Type</label>
-          <select class="form-select" id="appType" onchange="updateAppTypeHints()">
-            <option value="frappe">Frappe / ERPNext</option>
-            <option value="fastapi">FastAPI / Python</option>
-            <option value="docker">Docker / Compose</option>
-            <option value="generic">Generic</option>
-          </select>
-        </div>
-        <div class="form-row">
-          <label class="form-label">Tags (comma-separated)</label>
-          <input class="form-input" id="appTags" placeholder="production, api, frappe">
-        </div>
-      </div>
-      <div class="divider"></div>
-      <div class="section-label">Server Connection</div>
-      <div class="form-2">
-        <div class="form-row">
-          <label class="form-label">Server Host *</label>
-          <input class="form-input mono" id="cfgHost" placeholder="20.205.21.99 or hostname">
-        </div>
-        <div class="form-row">
-          <label class="form-label">SSH User *</label>
-          <input class="form-input mono" id="cfgSshUser" placeholder="azureuser / ubuntu">
-        </div>
-      </div>
-      <div class="form-2">
-        <div class="form-row">
-          <label class="form-label">SSH Key Path</label>
-          <input class="form-input mono" id="cfgSshKey" placeholder="/opt/tap-dashboard/keys/key.pem">
-          <div class="form-hint">Leave blank to use DASHBOARD_PEM from .env</div>
-        </div>
-        <div class="form-row">
-          <label class="form-label">Public URL</label>
-          <input class="form-input mono" id="cfgPublicUrl" placeholder="https://myapp.example.com">
-        </div>
-      </div>
-    </div>
-
-    <div id="appTab-scripts" style="display:none">
-      <div class="form-2">
-        <div class="form-row">
-          <label class="form-label">GitHub Repo URL</label>
-          <input class="form-input mono" id="cfgRepo" placeholder="https://github.com/org/repo.git">
-        </div>
-        <div class="form-row">
-          <label class="form-label">Branch</label>
-          <input class="form-input mono" id="cfgBranch" placeholder="main">
-        </div>
-      </div>
-      <div class="form-2">
-        <div class="form-row">
-          <label class="form-label">Setup Script</label>
-          <input class="form-input mono" id="cfgSetupScript" placeholder="setup-tap.sh">
-          <div class="form-hint">Filename in scripts/ dir or DB</div>
-        </div>
-        <div class="form-row">
-          <label class="form-label">Refresh Script</label>
-          <input class="form-input mono" id="cfgRefreshScript" placeholder="refresh-tap.sh">
-        </div>
-      </div>
-      <div class="form-row">
-        <label class="form-label">GitHub Dispatch Event</label>
-        <input class="form-input mono" id="cfgDispatchEvent" placeholder="manual-deploy (default)">
-        <div class="form-hint">Custom workflow_dispatch event name</div>
-      </div>
-      <div class="form-row">
-        <label class="form-label">App Directory (for version/git)</label>
-        <input class="form-input mono" id="cfgAppDir" placeholder="/home/frappe/frappe-bench/apps/tap_lms">
-      </div>
-      <div class="form-row">
-        <label class="form-label">Frappe Bench Directory</label>
-        <input class="form-input mono" id="cfgBenchDir" placeholder="/home/frappe/frappe-bench">
-        <div class="form-hint">For Frappe apps — used for version check and logs</div>
-      </div>
-      <div class="form-row">
-        <label class="form-label">Docker Compose Directory</label>
-        <input class="form-input mono" id="cfgDockerDir" placeholder="/home/user/my-app">
-        <div class="form-hint">For docker compose apps</div>
-      </div>
-    </div>
-
-    <div id="appTab-health" style="display:none">
-      <div class="form-2">
-        <div class="form-row">
-          <label class="form-label">Health Check Port</label>
-          <input class="form-input mono" id="cfgHealthPort" placeholder="8000">
-        </div>
-        <div class="form-row">
-          <label class="form-label">Health Check Path</label>
-          <input class="form-input mono" id="cfgHealthPath" placeholder="/">
-        </div>
-      </div>
-      <div class="form-row">
-        <label class="form-label">Custom Health Command (overrides port check)</label>
-        <input class="form-input mono" id="cfgHealthCmd" placeholder="systemctl is-active --quiet myapp">
-        <div class="form-hint">Exit 0 = healthy. Leave blank to use port/path check.</div>
-      </div>
-      <div class="divider"></div>
-      <div class="form-row">
-        <label class="form-label">Log Paths (comma-separated)</label>
-        <input class="form-input mono" id="cfgLogPaths" placeholder="/home/frappe/frappe-bench/logs/web.log,/home/frappe/frappe-bench/logs/schedule.log">
-      </div>
-      <div class="form-row">
-        <label class="form-label">Custom Log Command (overrides log paths)</label>
-        <input class="form-input mono" id="cfgLogCmd" placeholder="journalctl -u myapp -n {{lines}} --no-pager">
-        <div class="form-hint">Use {{lines}} placeholder for line count</div>
-      </div>
-      <div class="form-row">
-        <label class="form-label">Systemd Service Name</label>
-        <input class="form-input mono" id="cfgSystemdService" placeholder="frappe-web.service">
-      </div>
-    </div>
-
-    <div id="appTab-advanced" style="display:none">
-      <div class="form-row">
-        <label class="form-label">Custom Version Command</label>
-        <input class="form-input mono" id="cfgVersionCmd" placeholder="cat /app/VERSION">
-        <div class="form-hint">Leave blank for auto-detect (git rev-parse)</div>
-      </div>
-      <div class="form-row">
-        <label class="form-label">SSH Connection Timeout (ms)</label>
-        <input class="form-input mono" id="cfgSshTimeout" placeholder="20000">
-      </div>
-      <div class="form-row">
-        <label class="form-label">App Name (for bench lookups)</label>
-        <input class="form-input mono" id="cfgAppName" placeholder="tap_lms">
-      </div>
+    <div style="padding:12px 20px;border-bottom:1px solid var(--border);font-family:var(--font-mono);font-size:10px;color:var(--text3)" id="deploy-overlay-meta"></div>
+    <div class="detail-body" style="padding:0">
+      <div class="terminal" id="deploy-overlay-log" style="height:calc(100vh - 120px);border:none"></div>
     </div>
   </div>
-  <div class="modal-foot">
-    <button class="btn btn-ghost" onclick="closeModal('modalApp')">Cancel</button>
-    <button class="btn btn-ghost" id="testConnBtn" onclick="testConnection()">
-      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-      Test SSH
-    </button>
-    <button class="btn btn-primary" onclick="saveApp()">Save</button>
-  </div>
-</div>
-</div>
-
-<!-- Credentials Modal -->
-<div class="modal-bg" id="modalCreds">
-<div class="modal modal-wide">
-  <div class="modal-head">
-    <div><div class="modal-title" id="credsTitle">Env Variables</div><div class="modal-sub">Exported as shell env vars during setup/refresh</div></div>
-    <button class="modal-x" onclick="closeModal('modalCreds')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-  </div>
-  <div class="modal-body">
-    <input type="hidden" id="credsAppId">
-    <div id="credsList"></div>
-    <div class="divider"></div>
-    <div class="section-label">Add Variable</div>
-    <div class="form-2" style="gap:6px">
-      <div class="form-row" style="margin:0"><input class="form-input mono" id="newCredKey" placeholder="KEY_NAME"></div>
-      <div class="form-row" style="margin:0"><input class="form-input" id="newCredVal" placeholder="value"></div>
-    </div>
-    <div class="flex gap-6" style="margin-top:7px">
-      <label class="flex gap-4" style="font-size:10px;color:var(--t2);cursor:pointer">
-        <input type="checkbox" id="newCredSecret"> Secret (mask in UI)
-      </label>
-      <button class="btn btn-green btn-sm ml-auto" onclick="addCred()">Add</button>
-    </div>
-    <div class="info-banner" style="margin-top:12px">
-      Variables are written to a temp .env file on the remote server, sourced before script execution, then deleted. Secrets stored encrypted-at-rest in SQLite.
-    </div>
-  </div>
-  <div class="modal-foot">
-    <button class="btn btn-ghost" onclick="closeModal('modalCreds')">Close</button>
-  </div>
-</div>
-</div>
-
-<!-- Deploy Modal -->
-<div class="modal-bg" id="modalDeploy">
-<div class="modal">
-  <div class="modal-head">
-    <div><div class="modal-title">Trigger Deploy</div><div class="modal-sub" id="deployModalSub"></div></div>
-    <button class="modal-x" onclick="closeModal('modalDeploy')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-  </div>
-  <div class="modal-body">
-    <div style="font-size:11px;color:var(--t2);line-height:1.7">Sends a <code>workflow_dispatch</code> event to GitHub Actions for the configured repo and branch. The deployment will be tracked in the Deployments tab.</div>
-  </div>
-  <div class="modal-foot">
-    <button class="btn btn-ghost" onclick="closeModal('modalDeploy')">Cancel</button>
-    <button class="btn btn-primary" id="deployConfirmBtn" onclick="confirmDeploy()">Trigger</button>
-  </div>
-</div>
-</div>
-
-<!-- Run Script Modal -->
-<div class="modal-bg" id="modalRunScript">
-<div class="modal">
-  <div class="modal-head">
-    <div><div class="modal-title">Run Script</div><div class="modal-sub" id="runScriptSub"></div></div>
-    <button class="modal-x" onclick="closeModal('modalRunScript')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-  </div>
-  <div class="modal-body">
-    <div class="form-row">
-      <label class="form-label">Script</label>
-      <select class="form-select" id="runScriptName"></select>
-    </div>
-    <div class="form-row">
-      <label class="form-label">Job Label</label>
-      <input class="form-input" id="runScriptJobType" placeholder="custom">
-    </div>
-  </div>
-  <div class="modal-foot">
-    <button class="btn btn-ghost" onclick="closeModal('modalRunScript')">Cancel</button>
-    <button class="btn btn-primary" onclick="confirmRunScript()">Run</button>
-  </div>
-</div>
-</div>
-
-<!-- Job Log Modal -->
-<div class="modal-bg" id="modalJobLog">
-<div class="modal modal-wide">
-  <div class="modal-head">
-    <div><div class="modal-title" id="jobLogTitle">Job Output</div><div class="modal-sub" id="jobLogSub"></div></div>
-    <button class="modal-x" onclick="closeModal('modalJobLog')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-  </div>
-  <div class="modal-body">
-    <div class="job-stream" id="jobLogContent"></div>
-  </div>
-</div>
-</div>
-
-<!-- SSH Key Modal -->
-<div class="modal-bg" id="modalSSHKey">
-<div class="modal">
-  <div class="modal-head">
-    <div><div class="modal-title">Register SSH Key</div><div class="modal-sub">Add a .pem key path available on the dashboard server</div></div>
-    <button class="modal-x" onclick="closeModal('modalSSHKey')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-  </div>
-  <div class="modal-body">
-    <div class="form-row"><label class="form-label">Key Name</label><input class="form-input" id="sshKeyName" placeholder="tap-server"></div>
-    <div class="form-row"><label class="form-label">Absolute Path on Server</label><input class="form-input mono" id="sshKeyPath" placeholder="/opt/tap-dashboard/keys/key.pem"></div>
-  </div>
-  <div class="modal-foot">
-    <button class="btn btn-ghost" onclick="closeModal('modalSSHKey')">Cancel</button>
-    <button class="btn btn-primary" onclick="addSSHKey()">Register</button>
-  </div>
-</div>
-</div>
-
-<!-- New Script Modal -->
-<div class="modal-bg" id="modalNewScript">
-<div class="modal">
-  <div class="modal-head">
-    <div><div class="modal-title">New Script</div><div class="modal-sub">Create a new setup, refresh or custom script</div></div>
-    <button class="modal-x" onclick="closeModal('modalNewScript')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-  </div>
-  <div class="modal-body">
-    <div class="form-row"><label class="form-label">Filename</label><input class="form-input mono" id="newScriptName" placeholder="setup-myapp.sh"></div>
-    <div class="form-2">
-      <div class="form-row">
-        <label class="form-label">Type</label>
-        <select class="form-select" id="newScriptType">
-          <option value="setup">Setup</option>
-          <option value="refresh">Refresh</option>
-          <option value="custom">Custom</option>
-        </select>
-      </div>
-      <div class="form-row">
-        <label class="form-label">App (optional)</label>
-        <select class="form-select" id="newScriptApp">
-          <option value="">— none —</option>
-        </select>
-      </div>
-    </div>
-    <div class="form-row">
-      <label class="form-label">Template</label>
-      <select class="form-select" id="newScriptTemplate" onchange="applyScriptTemplate()">
-        <option value="">blank</option>
-        <option value="frappe-setup">Frappe setup</option>
-        <option value="frappe-refresh">Frappe refresh</option>
-        <option value="docker-setup">Docker setup</option>
-        <option value="docker-refresh">Docker refresh</option>
-        <option value="fastapi-refresh">FastAPI refresh</option>
-      </select>
-    </div>
-  </div>
-  <div class="modal-foot">
-    <button class="btn btn-ghost" onclick="closeModal('modalNewScript')">Cancel</button>
-    <button class="btn btn-primary" onclick="createNewScript()">Create</button>
-  </div>
-</div>
 </div>
 
 <script>
-const API = '';
-let TOKEN = localStorage.getItem('tap_token') || '';
-let allApps = [];
-let pendingDeployApp = null;
-let pendingRunScriptApp = null;
-let activeScriptName = null;
-let sseSource = null;
+// ──────────────────────────────────────────────────────────────
+//  State
+// ──────────────────────────────────────────────────────────────
 let currentPage = 'overview';
-let logPollTimer = null;
+let apps = [];
+let ws = null;
+let activeDeployId = null;
+let currentAppId = null;
+let statusPolling = {};
 
-document.getElementById('tokenInput').value = TOKEN;
-const H = () => ({ 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' });
-
-async function api(path, opts = {}) {
-  const r = await fetch(API + path, { headers: H(), ...opts });
-  if (!r.ok) { const e = await r.json().catch(() => ({ error: r.statusText })); throw new Error(e.error || r.statusText); }
-  return r.json();
-}
-
-function saveToken() {
-  TOKEN = document.getElementById('tokenInput').value.trim();
-  localStorage.setItem('tap_token', TOKEN);
-  toast('Token saved');
-  refreshAll();
-}
-
-function nav(page) {
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  const pageEl = document.getElementById(`page-${page}`);
-  if (pageEl) pageEl.classList.add('active');
-  const navEl = document.getElementById(`ni-${page}`);
-  if (navEl) navEl.classList.add('active');
-  const labels = { overview:'overview', deployments:'deployments', jobs:'jobs', metrics:'metrics', logs:'logs', scripts:'scripts', settings:'settings', 'app-detail':'app' };
-  document.getElementById('tbPage').textContent = labels[page] || page;
-  currentPage = page;
-  if (logPollTimer) { clearInterval(logPollTimer); logPollTimer = null; }
-  if (page === 'deployments') loadDeployments();
-  if (page === 'jobs') loadJobs();
-  if (page === 'metrics') loadMetrics();
-  if (page === 'logs') { populateLogSel(); logPollTimer = setInterval(fetchLogs, 30000); }
-  if (page === 'scripts') loadScripts();
-  if (page === 'settings') loadSettings();
-}
-
-function navApp(appId) {
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  document.getElementById('page-app-detail').classList.add('active');
-  document.getElementById(`ni-app-${appId}`)?.classList.add('active');
-  const app = allApps.find(a => a.app === appId || a.id === appId);
-  document.getElementById('tbPage').textContent = app?.name?.toLowerCase().replace(/ /g,'_') || appId;
-  currentPage = `app-${appId}`;
-  loadAppDetail(appId);
-}
-
-async function refreshAll() {
-  try {
-    const data = await api('/api/status');
-    allApps = data.apps;
-    renderStats(data.stats, data.apps);
-    renderAppGrid(data.apps);
-    renderAppNav(data.apps);
-    updateGlobalHealth(data.apps);
-    populateDeployFilter(data.apps);
-    populateLogSel();
-  } catch (e) {
-    document.getElementById('globalHealth').textContent = 'error';
-    document.getElementById('globalHealth').className = 'health-chip hc-err';
+// ──────────────────────────────────────────────────────────────
+//  Init
+// ──────────────────────────────────────────────────────────────
+async function init() {
+  const r = await api('GET', '/api/auth/status');
+  if (r.needsSetup) {
+    document.getElementById('setup-section').style.display = 'block';
+  } else if (r.authenticated) {
+    document.getElementById('topbar-username').textContent = r.user;
+    showApp();
+  } else {
+    document.getElementById('login-section').style.display = 'block';
   }
 }
 
-function updateGlobalHealth(apps) {
-  const h = apps.filter(a => a.healthy).length;
-  const el = document.getElementById('globalHealth');
-  el.textContent = `${h}/${apps.length} ok`;
-  el.className = 'health-chip ' + (h === apps.length ? 'hc-ok' : h === 0 ? 'hc-err' : 'hc-warn');
+function showApp() {
+  document.getElementById('login-screen').style.display = 'none';
+  document.getElementById('app').style.display = 'grid';
+  connectWS();
+  loadApps().then(() => {
+    showPage('overview');
+    loadOverviewData();
+  });
 }
 
-function renderStats(stats = {}, apps = []) {
-  const healthy = apps.filter(a => a.healthy).length;
-  document.getElementById('statsRow').innerHTML = `
-    <div class="stat-card sc-green"><div class="stat-num">${healthy}<span style="font-size:14px;color:var(--t3);font-weight:400">/${apps.length}</span></div><div class="stat-label">Apps Online</div></div>
-    <div class="stat-card sc-blue"><div class="stat-num">${stats.totalDeployments ?? '—'}</div><div class="stat-label">Total Deploys</div></div>
-    <div class="stat-card sc-yellow"><div class="stat-num">${stats.successRate != null ? stats.successRate + '%' : '—'}</div><div class="stat-label">Success Rate</div></div>
-    <div class="stat-card sc-purple"><div class="stat-num">${stats.last24h ?? '—'}</div><div class="stat-label">Last 24h</div></div>
-    <div class="stat-card sc-orange"><div class="stat-num">${stats.activeJobs ?? 0}</div><div class="stat-label">Active Jobs</div></div>
+// ──────────────────────────────────────────────────────────────
+//  Auth
+// ──────────────────────────────────────────────────────────────
+async function doSetup() {
+  const u = val('setup-username'), p = val('setup-password'), c = val('setup-confirm');
+  if (!u || !p) return showLoginError('Fill all fields');
+  if (p !== c) return showLoginError('Passwords do not match');
+  if (p.length < 8) return showLoginError('Password min 8 chars');
+  const r = await api('POST', '/api/auth/setup', { username: u, password: p });
+  if (r.ok) { document.getElementById('topbar-username').textContent = u; showApp(); }
+  else showLoginError(r.error || 'Error');
+}
+
+async function doLogin() {
+  const u = val('login-username'), p = val('login-password');
+  if (!u || !p) return;
+  const r = await api('POST', '/api/auth/login', { username: u, password: p });
+  if (r.ok) { document.getElementById('topbar-username').textContent = r.username; showApp(); }
+  else showLoginError(r.error || 'Invalid credentials');
+}
+
+async function doLogout() {
+  await api('POST', '/api/auth/logout');
+  location.reload();
+}
+
+function showLoginError(msg) {
+  const el = document.getElementById('login-error');
+  el.textContent = msg; el.style.display = 'block';
+  setTimeout(() => el.style.display = 'none', 4000);
+}
+
+// ──────────────────────────────────────────────────────────────
+//  WebSocket
+// ──────────────────────────────────────────────────────────────
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}`);
+  const dot = document.getElementById('ws-dot');
+  const label = document.getElementById('ws-label');
+
+  ws.onopen = () => {
+    dot.className = 'ws-indicator connected';
+    label.textContent = 'live';
+    ws.send(JSON.stringify({ type: 'auth', sessionId: 'dashboard' }));
+  };
+  ws.onclose = () => {
+    dot.className = 'ws-indicator';
+    label.textContent = 'reconnecting...';
+    setTimeout(connectWS, 3000);
+  };
+  ws.onmessage = (e) => {
+    try { handleWSMessage(JSON.parse(e.data)); } catch {}
+  };
+}
+
+function handleWSMessage(msg) {
+  if (msg.type === 'status_update') {
+    updateAppStatus(msg.app_id, msg.status);
+    updateOverviewStats();
+  } else if (msg.type === 'deploy_log') {
+    if (activeDeployId == msg.deploy_id) {
+      appendDeployLog(msg.chunk);
+    }
+  } else if (msg.type === 'deploy_start') {
+    flash(`Deploy #${msg.deploy_id} started for ${msg.app_id}`, 'info');
+  } else if (msg.type === 'deploy_finish') {
+    if (activeDeployId == msg.deploy_id) {
+      const badge = document.getElementById('deploy-overlay-badge');
+      if (badge) {
+        badge.textContent = msg.status;
+        badge.className = `badge ${msg.status}`;
+      }
+    }
+    flash(`Deploy ${msg.status === 'success' ? '✓' : '✗'} ${msg.app_id} — ${msg.status}`, msg.status === 'success' ? 'success' : 'error');
+    loadOverviewData();
+    // Refresh app page if viewing that app
+    if (currentPage === `app-${msg.app_id}`) {
+      refreshAppDeployments(msg.app_id);
+    }
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+//  Navigation
+// ──────────────────────────────────────────────────────────────
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.sidebar-item').forEach(i => i.classList.remove('active'));
+
+  const page = document.getElementById('page-' + name) || document.getElementById('page-app-' + name);
+  if (page) page.classList.add('active');
+
+  const nav = document.getElementById('nav-' + name);
+  if (nav) nav.classList.add('active');
+
+  currentPage = name;
+
+  if (name === 'overview') loadOverviewData();
+  else if (name === 'keys') loadKeys();
+  else if (name === 'deployments') loadAllDeployments();
+  else if (apps.find(a => a.app_id === name)) {
+    currentAppId = name;
+    loadAppPage(name);
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+//  Apps
+// ──────────────────────────────────────────────────────────────
+async function loadApps() {
+  apps = await api('GET', '/api/apps') || [];
+  buildSidebarApps();
+  buildAppPages();
+}
+
+function buildSidebarApps() {
+  const container = document.getElementById('sidebar-apps');
+  container.innerHTML = apps.map(app => `
+    <div class="sidebar-item" onclick="showPage('${app.app_id}')" id="nav-${app.app_id}">
+      <div class="dot ${(app.status?.overall || 'not_configured')}" id="sidebar-dot-${app.app_id}"></div>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${app.app_name.split('—')[0].trim()}</span>
+    </div>
+  `).join('');
+}
+
+function buildAppPages() {
+  for (const app of apps) {
+    const page = document.getElementById('page-app-' + app.app_id);
+    if (!page) continue;
+    page.innerHTML = buildAppPageHTML(app);
+  }
+}
+
+function buildAppPageHTML(app) {
+  const initials = app.app_id.toUpperCase();
+  const configured = !!(app.server_host && app.ssh_key_path);
+  return `
+    <div class="app-hero">
+      <div class="app-icon">${initials}</div>
+      <div class="app-info">
+        <div class="app-name">${app.app_name}</div>
+        <div class="app-meta">
+          <span id="meta-host-${app.app_id}">${app.server_host || '—'}</span>
+          <span id="meta-branch-${app.app_id}">branch: loading...</span>
+          <span id="meta-overall-${app.app_id}"><span class="badge not_configured">not configured</span></span>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:flex-start">
+        <button class="btn btn-ghost" onclick="fetchStatus('${app.app_id}')">↺ STATUS</button>
+        <button class="btn btn-primary" onclick="openDeployModal('${app.app_id}')" id="btn-deploy-${app.app_id}">▶ DEPLOY</button>
+      </div>
+    </div>
+    <div class="app-tabs">
+      <div class="tab active" onclick="switchTab('${app.app_id}','overview')">OVERVIEW</div>
+      <div class="tab" onclick="switchTab('${app.app_id}','logs')">LOGS</div>
+      <div class="tab" onclick="switchTab('${app.app_id}','deploys')">DEPLOYMENTS</div>
+      <div class="tab" onclick="switchTab('${app.app_id}','github')">GIT</div>
+      <div class="tab" onclick="switchTab('${app.app_id}','config')">CONFIG</div>
+    </div>
+
+    <!-- OVERVIEW TAB -->
+    <div class="tab-content active" id="tab-${app.app_id}-overview">
+      <div class="section">
+        <div class="section-title">Server Metrics</div>
+        <div class="metrics-row" id="metrics-${app.app_id}" style="border:1px solid var(--border)">
+          <div class="metric-card"><div class="metric-label">CPU LOAD</div><div class="metric-value" id="m-cpu-${app.app_id}">—</div><div class="metric-bar"><div class="metric-bar-fill" id="mb-cpu-${app.app_id}" style="width:0%"></div></div></div>
+          <div class="metric-card"><div class="metric-label">MEMORY</div><div class="metric-value" id="m-mem-${app.app_id}">—</div><div class="metric-bar"><div class="metric-bar-fill" id="mb-mem-${app.app_id}" style="width:0%"></div></div></div>
+          <div class="metric-card"><div class="metric-label">DISK USED</div><div class="metric-value" id="m-disk-${app.app_id}">—</div><div class="metric-bar"><div class="metric-bar-fill" id="mb-disk-${app.app_id}" style="width:0%"></div></div></div>
+          <div class="metric-card"><div class="metric-label">SERVICES</div><div class="metric-value" id="m-svc-${app.app_id}">—</div></div>
+        </div>
+      </div>
+      <div class="section" style="margin-top:0">
+        <div class="section-title">Services</div>
+        <div class="services-grid" id="services-${app.app_id}" style="border:1px solid var(--border)">
+          <div class="empty" style="grid-column:1/-1">Click STATUS to load</div>
+        </div>
+      </div>
+      <div class="section" style="margin-top:0">
+        <div class="section-title">Containers</div>
+        <div class="table-wrap" id="containers-${app.app_id}">
+          <div class="empty"><strong>No data</strong>Click STATUS to load</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LOGS TAB -->
+    <div class="tab-content" id="tab-${app.app_id}-logs">
+      <div class="section">
+        <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+          <select class="form-input" id="log-service-${app.app_id}" style="width:200px;padding:6px 10px">
+            <option value="plg_app">plg_app</option>
+            <option value="plg_api">plg_api</option>
+            <option value="plg-frappe-web">plg-frappe-web</option>
+            <option value="plg-frappe-worker">plg-frappe-worker</option>
+            <option value="plg-frappe-schedule">plg-frappe-schedule</option>
+            <option value="plg-postgres">plg-postgres</option>
+            <option value="plg-rabbitmq">plg-rabbitmq</option>
+            <option value="plg-redis-cache">plg-redis-cache</option>
+            <option value="plg-redis-queue">plg-redis-queue</option>
+            <option value="plg-observer">plg-observer</option>
+            <option value="plg-deployer">plg-deployer</option>
+          </select>
+          <select class="form-input" id="log-lines-${app.app_id}" style="width:100px;padding:6px 10px">
+            <option value="50">50 lines</option>
+            <option value="100" selected>100 lines</option>
+            <option value="200">200 lines</option>
+            <option value="500">500 lines</option>
+          </select>
+          <button class="btn btn-ghost" onclick="loadLogs('${app.app_id}')">FETCH LOGS</button>
+        </div>
+        <div class="terminal" id="logs-terminal-${app.app_id}">Select a service and click FETCH LOGS.</div>
+      </div>
+    </div>
+
+    <!-- DEPLOYMENTS TAB -->
+    <div class="tab-content" id="tab-${app.app_id}-deploys">
+      <div class="section">
+        <div style="display:flex;gap:8px;margin-bottom:16px">
+          <button class="btn btn-ghost" onclick="refreshAppDeployments('${app.app_id}')">↺ REFRESH</button>
+        </div>
+        <div id="app-deploys-${app.app_id}"><div class="empty"><strong>No deployments</strong></div></div>
+      </div>
+    </div>
+
+    <!-- GIT TAB -->
+    <div class="tab-content" id="tab-${app.app_id}-github">
+      <div class="section">
+        <div class="section-title">Current Branch</div>
+        <div id="github-branch-${app.app_id}"><div class="empty">Loading...</div></div>
+        <div class="section-title" style="margin-top:24px">Recent Commits</div>
+        <div id="github-commits-${app.app_id}"></div>
+        <div class="section-title" style="margin-top:24px">All Branches</div>
+        <div id="github-branches-${app.app_id}"></div>
+      </div>
+    </div>
+
+    <!-- CONFIG TAB -->
+    <div class="tab-content" id="tab-${app.app_id}-config">
+      <div class="config-panel">
+        <div class="section-title">Server Connection</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Server Host / IP</label>
+            <input class="form-input" id="cfg-host-${app.app_id}" value="${app.server_host || ''}" placeholder="20.x.x.x">
+          </div>
+          <div class="form-group">
+            <label class="form-label">SSH Port</label>
+            <input class="form-input" id="cfg-port-${app.app_id}" value="${app.ssh_port || 22}" placeholder="22">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Server User</label>
+            <input class="form-input" id="cfg-user-${app.app_id}" value="${app.server_user || 'azureuser'}" placeholder="azureuser">
+          </div>
+          <div class="form-group">
+            <label class="form-label">SSH Key</label>
+            <select class="form-input" id="cfg-key-${app.app_id}">
+              <option value="">— select key —</option>
+            </select>
+            <div class="form-hint" id="cfg-key-current-${app.app_id}">Current: ${app.ssh_key_path || 'none'}</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:24px">
+          <button class="btn btn-ghost" onclick="testSSH('${app.app_id}')">TEST CONNECTION</button>
+          <span id="ssh-test-result-${app.app_id}" style="font-family:var(--font-mono);font-size:11px;align-self:center"></span>
+        </div>
+
+        <div class="section-title">Environment Variables</div>
+        <div id="env-editor-${app.app_id}" class="env-editor"></div>
+        <div style="display:flex;gap:8px;margin-top:16px">
+          <button class="btn btn-primary" onclick="saveConfig('${app.app_id}')">SAVE CONFIG</button>
+          <button class="btn btn-ghost" onclick="addEnvRow('${app.app_id}')">+ ADD VARIABLE</button>
+        </div>
+      </div>
+    </div>
   `;
 }
 
-const typeEmoji = { frappe:'📦', fastapi:'⚡', docker:'🐳', generic:'🔧' };
-const typeClass = { frappe:'ai-frappe', fastapi:'ai-fastapi', docker:'ai-docker', generic:'ai-generic' };
+// ──────────────────────────────────────────────────────────────
+//  App Page Loading
+// ──────────────────────────────────────────────────────────────
+async function loadAppPage(appId) {
+  // Load config
+  const app_ = await api('GET', `/api/apps/${appId}`);
+  if (!app_) return;
 
-function renderAppGrid(apps) {
-  const g = document.getElementById('appGrid');
-  const e = document.getElementById('emptyState');
-  if (!apps.length) { g.innerHTML = ''; e.style.display = ''; return; }
-  e.style.display = 'none';
-  g.innerHTML = apps.map(a => {
-    const m = a.metrics || {};
-    const dotC = a.activeJob ? 'sdot-busy' : a.healthy ? 'sdot-ok' : 'sdot-err';
-    const statusTxt = a.activeJob ? a.activeJob.jobType : (a.healthy ? 'online' : 'offline');
-    const lastD = a.lastDeploy ? ago(a.lastDeploy.timestamp) : 'never';
-    const tags = (a.tags || []).map(t => `<span class="badge-env tag-gray" style="margin-right:3px">${esc(t)}</span>`).join('');
-    return `
-    <div class="app-card">
-      <div class="app-card-top">
-        <div class="app-meta">
-          <div class="app-icon ${typeClass[a.type] || 'ai-generic'}">${typeEmoji[a.type] || '🔧'}</div>
-          <div>
-            <div class="app-title">${esc(a.name)}</div>
-            <div class="app-host">${esc(a.config?.host || '')}</div>
-          </div>
-        </div>
-        <div class="app-status">
-          <span class="app-status-text">${statusTxt}</span>
-          <span class="sdot ${dotC}"></span>
-        </div>
-      </div>
-      ${tags ? `<div style="margin-bottom:7px">${tags}</div>` : ''}
-      <div class="app-metrics">
-        <div class="app-metric"><div class="app-metric-val">${a.version || '—'}</div><div class="app-metric-lbl">Version</div></div>
-        <div class="app-metric"><div class="app-metric-val" style="font-size:10px">${lastD}</div><div class="app-metric-lbl">Last Deploy</div></div>
-        <div class="app-metric"><div class="app-metric-val">${m.cpu != null ? m.cpu + '%' : '—'}</div><div class="app-metric-lbl">CPU</div></div>
-      </div>
-      <div class="app-actions">
-        <button class="btn btn-ghost btn-sm" onclick="navApp('${a.app}')">Details</button>
-        <button class="btn btn-yellow btn-sm" onclick="triggerSetup('${a.app}')">Setup</button>
-        <button class="btn btn-green btn-sm" onclick="triggerRefresh('${a.app}')">Refresh</button>
-        <button class="btn btn-blue btn-sm" onclick="openDeploy('${a.app}')">Deploy</button>
-        <button class="btn btn-ghost btn-sm" onclick="openCreds('${a.app}')">
-          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-        </button>
-      </div>
-    </div>`;
-  }).join('');
+  // Populate env editor
+  buildEnvEditor(appId, app_.env_json || {});
+
+  // Populate key selector
+  const keys = await api('GET', '/api/keys');
+  const sel = document.getElementById(`cfg-key-${appId}`);
+  if (sel && keys) {
+    sel.innerHTML = '<option value="">— select key —</option>' +
+      keys.map(k => `<option value="${k.file_path}" ${k.file_path === app_.ssh_key_path ? 'selected' : ''}>${k.name}</option>`).join('');
+  }
+
+  // Load GitHub info
+  loadGithub(appId);
+
+  // Load deployments
+  refreshAppDeployments(appId);
+
+  // Load status
+  fetchStatus(appId);
 }
 
-function renderAppNav(apps) {
-  document.getElementById('appNavList').innerHTML = apps.map(a => {
-    const dotC = a.activeJob ? 'nd-busy' : a.healthy ? 'nd-ok' : 'nd-err';
-    return `
-    <div class="nav-item" id="ni-app-${a.app}" onclick="navApp('${a.app}')">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
-      ${esc(a.name)}
-      <span class="nav-dot ${dotC}"></span>
-    </div>`;
-  }).join('');
-}
+function switchTab(appId, tab) {
+  const page = document.getElementById('page-app-' + appId) || document.getElementById('page-' + appId);
+  if (!page) return;
+  page.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  page.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
 
-function populateDeployFilter(apps) {
-  const sel = document.getElementById('deployFilterApp');
-  const cur = sel.value;
-  sel.innerHTML = `<option value="">All Apps</option>` + apps.map(a => `<option value="${a.app}">${esc(a.name)}</option>`).join('');
-  sel.value = cur;
-}
+  const tabs = page.querySelectorAll('.tab');
+  const tabOrder = ['overview','logs','deploys','github','config'];
+  const idx = tabOrder.indexOf(tab);
+  if (tabs[idx]) tabs[idx].classList.add('active');
 
-function populateLogSel() {
-  const sel = document.getElementById('logAppSel');
-  const cur = sel.value;
-  sel.innerHTML = allApps.map(a => `<option value="${a.app}">${esc(a.name)}</option>`).join('');
-  if (cur) sel.value = cur;
-}
+  const tc = document.getElementById(`tab-${appId}-${tab}`);
+  if (tc) tc.classList.add('active');
 
-async function loadAppDetail(appId) {
-  const c = document.getElementById('appDetailContent');
-  c.innerHTML = '<div class="loading"><div class="spinner"></div>Loading…</div>';
-  try {
-    const [sr, rr] = await Promise.allSettled([api(`/api/status/${appId}`), api(`/api/apps/${appId}/github/runs`)]);
-    const s = sr.status === 'fulfilled' ? sr.value : {};
-    const runs = rr.status === 'fulfilled' ? rr.value : [];
-    const m = s.metrics || {};
-    const cfg = s.config || {};
-    const commit = s.commit || {};
-    const dotC = s.activeJob ? 'sdot-busy' : s.healthy ? 'sdot-ok' : 'sdot-err';
-    const cfgRows = Object.entries(cfg).map(([k, v]) => `<div class="cfg-row"><span class="cfg-key">${esc(k)}</span><span class="cfg-val">${esc(String(v || '—'))}</span></div>`).join('');
-    const tags = (s.tags || []).map(t => `<span class="badge-env tag-gray" style="margin-right:3px">${esc(t)}</span>`).join('');
-    c.innerHTML = `
-    <div class="pg-hd">
-      <div style="display:flex;align-items:center;gap:10px">
-        <div class="app-icon ${typeClass[s.type] || 'ai-generic'}" style="width:38px;height:38px;font-size:16px">${typeEmoji[s.type] || '🔧'}</div>
-        <div>
-          <div class="pg-title flex gap-8">${esc(s.name || appId)} <span class="sdot ${dotC}"></span></div>
-          <div class="pg-sub">${esc(cfg.host || '')} ${tags}</div>
-        </div>
-      </div>
-      <div class="pg-actions">
-        <button class="btn btn-ghost btn-sm" onclick="openEditApp('${appId}')">Edit</button>
-        <button class="btn btn-ghost btn-sm" onclick="openCreds('${appId}')">Env Vars</button>
-        <button class="btn btn-purple btn-sm" onclick="openRunScript('${appId}')">Run Script</button>
-        <button class="btn btn-yellow btn-sm" onclick="triggerSetup('${appId}')">Setup</button>
-        <button class="btn btn-green btn-sm" onclick="triggerRefresh('${appId}')">Refresh</button>
-        <button class="btn btn-blue btn-sm" onclick="openDeploy('${appId}')">Deploy</button>
-        ${s.activeJob ? `<button class="btn btn-red btn-sm" onclick="killJob('${appId}')">Kill Job</button>` : ''}
-      </div>
-    </div>
-    <div class="detail-grid">
-      <div>
-        <div class="card" style="margin-bottom:8px">
-          <div class="card-head"><span class="card-head-title">Server Status</span></div>
-          <div class="card-body">
-            <div class="form-2" style="margin-bottom:10px">
-              <div><div class="muted" style="font-size:9px;text-transform:uppercase;letter-spacing:.5px">HTTP</div><div class="mono" style="margin-top:3px;font-size:16px;font-weight:700;color:${s.httpCode >= 200 && s.httpCode < 500 ? 'var(--green)' : 'var(--red)'}">${s.httpCode || '—'}</div></div>
-              <div><div class="muted" style="font-size:9px;text-transform:uppercase;letter-spacing:.5px">Version</div><div class="mono" style="margin-top:3px;font-size:11px">${esc(s.version || '—')}</div></div>
-            </div>
-            ${meterHTML('CPU', m.cpu, '%')}
-            ${meterHTML('Memory', m.mem, '%')}
-            ${meterHTML('Disk', m.disk, '%')}
-            <div style="margin-top:8px;font-size:10px"><span class="muted">uptime </span><span class="mono">${esc(m.uptime || '—')}</span></div>
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-head"><span class="card-head-title">Configuration</span></div>
-          <div class="card-body">${cfgRows || '<div class="muted" style="font-size:10px">No config</div>'}</div>
-        </div>
-      </div>
-      <div>
-        ${commit.sha ? `
-        <div class="card" style="margin-bottom:8px">
-          <div class="card-head"><span class="card-head-title">Latest Commit</span></div>
-          <div class="card-body">
-            <div class="commit-box">
-              <div class="commit-sha">${esc(commit.sha)}</div>
-              <div class="commit-msg">${esc(commit.message || '')}</div>
-              <div class="commit-meta">${esc(commit.author || '')} · ${commit.date ? ago(new Date(commit.date).getTime()) : ''}</div>
-            </div>
-          </div>
-        </div>` : ''}
-        <div class="card" style="margin-bottom:8px">
-          <div class="card-head"><span class="card-head-title">GitHub Actions</span></div>
-          <div class="card-body" style="padding:6px">
-            ${runs.length ? runs.slice(0,8).map(run => {
-              const ic = run.conclusion==='success'?'✓':run.conclusion==='failure'?'✗':'·';
-              const col = run.conclusion==='success'?'var(--green)':run.conclusion==='failure'?'var(--red)':'var(--yellow)';
-              const bg = run.conclusion==='success'?'var(--green2)':run.conclusion==='failure'?'var(--red2)':'var(--yellow2)';
-              return `<div class="run-item"><div class="run-icon" style="background:${bg};color:${col}">${ic}</div><span class="run-name">${esc(run.name)}</span><span class="run-sha mono">${esc(run.sha)}</span><span class="muted" style="font-size:9px">${ago(new Date(run.created_at).getTime())}</span>${run.html_url?`<a href="${run.html_url}" target="_blank" style="color:var(--blue);font-size:10px">↗</a>`:''}</div>`;
-            }).join('') : '<div class="empty" style="padding:16px">No workflow runs</div>'}
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-head"><span class="card-head-title">Recent Jobs</span></div>
-          <div id="appDetailJobs" style="padding:6px">
-            <div class="loading"><div class="spinner"></div></div>
-          </div>
-        </div>
-      </div>
-    </div>`;
-    loadAppJobs(appId);
-  } catch (e) {
-    c.innerHTML = `<div class="empty"><div class="empty-title red">Error</div><div class="empty-text">${esc(e.message)}</div></div>`;
+  if (tab === 'logs') loadLogs(appId);
+  if (tab === 'github') loadGithub(appId);
+  if (tab === 'deploys') refreshAppDeployments(appId);
+  if (tab === 'config') {
+    const keys = api('GET', '/api/keys').then(keys => {
+      if (!keys) return;
+      const app_ = apps.find(a => a.app_id === appId);
+      const sel = document.getElementById(`cfg-key-${appId}`);
+      if (sel) sel.innerHTML = '<option value="">— select key —</option>' +
+        keys.map(k => `<option value="${k.file_path}" ${app_ && k.file_path === app_.ssh_key_path ? 'selected' : ''}>${k.name}</option>`).join('');
+    });
   }
 }
 
-async function loadAppJobs(appId) {
-  try {
-    const data = await api('/api/jobs');
-    const jobs = (data.recent || []).filter(j => j.app === appId).slice(0, 8);
-    const el = document.getElementById('appDetailJobs');
-    if (!el) return;
-    if (!jobs.length) { el.innerHTML = '<div class="muted" style="font-size:10px;padding:8px">No jobs yet</div>'; return; }
-    const tagC = { success:'tag-green', failed:'tag-red', running:'tag-yellow' };
-    el.innerHTML = jobs.map(j => `
-      <div style="display:flex;align-items:center;gap:8px;padding:5px 6px;border-radius:4px;margin-bottom:2px;background:var(--s2)">
-        <span class="mono" style="font-size:9px;color:var(--blue);min-width:60px">${esc(j.job_type)}</span>
-        <span class="tag ${tagC[j.status] || 'tag-gray'}">${j.status}</span>
-        <span class="muted" style="font-size:9px">${j.duration ? (j.duration/1000).toFixed(1)+'s' : '—'}</span>
-        <span class="muted" style="font-size:9px;margin-left:auto">${ago(j.timestamp)}</span>
-        ${j.log ? `<button class="btn btn-ghost btn-sm" onclick="viewJobLog(${j.id},'${j.app}','${j.job_type}')">log</button>` : ''}
-      </div>`).join('');
-  } catch {}
+// ──────────────────────────────────────────────────────────────
+//  Status
+// ──────────────────────────────────────────────────────────────
+async function fetchStatus(appId) {
+  const badge = document.getElementById(`meta-overall-${appId}`);
+  if (badge) badge.innerHTML = '<span class="badge running pulse">fetching...</span>';
+
+  const status = await api('GET', `/api/apps/${appId}/status`);
+  updateAppStatus(appId, status);
+  updateOverviewStats();
 }
 
-function meterHTML(label, val, unit) {
-  const p = parseFloat(val);
-  const cls = p > 80 ? 'mf-r' : p > 60 ? 'mf-y' : 'mf-g';
-  return `<div class="meter">
-    <div class="meter-row"><span class="meter-label">${label}</span><span class="meter-val ${p>80?'red':p>60?'yellow':'green'}">${val != null ? val+unit : '—'}</span></div>
-    ${val != null ? `<div class="meter-track"><div class="meter-fill ${cls}" style="width:${Math.min(p,100)}%"></div></div>` : ''}
-  </div>`;
-}
+function updateAppStatus(appId, status) {
+  if (!status) return;
 
-async function loadDeployments() {
-  const tbody = document.getElementById('deployTable');
-  tbody.innerHTML = `<tr><td colspan="8"><div class="loading"><div class="spinner"></div></div></td></tr>`;
-  const appId = document.getElementById('deployFilterApp').value;
-  try {
-    const data = await api(`/api/deployments?${appId?`app=${appId}&`:''}limit=100`);
-    if (!data.length) { tbody.innerHTML = `<tr><td colspan="8"><div class="empty" style="padding:20px">No deployments yet</div></td></tr>`; return; }
-    const tagC = { success:'tag-green', failed:'tag-red', pending:'tag-yellow', triggered:'tag-blue', running:'tag-yellow' };
-    tbody.innerHTML = data.map(d => `<tr>
-      <td><span style="font-weight:600">${esc(allApps.find(a=>a.app===d.app)?.name||d.app)}</span></td>
-      <td><span class="mono muted">${esc(d.commit||'—').slice(0,8)}</span></td>
-      <td><span class="muted mono" style="font-size:10px">${esc(d.branch||'—')}</span></td>
-      <td><span class="tag ${tagC[d.status]||'tag-gray'}">${d.status}</span></td>
-      <td><span class="muted">${esc(d.triggered_by||'—')}</span></td>
-      <td><span class="muted mono">${d.duration?(d.duration/1000).toFixed(1)+'s':'—'}</span></td>
-      <td><span class="muted" style="font-size:10px">${ago(d.timestamp)}</span></td>
-      <td><span class="muted" style="max-width:120px;display:inline-block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px">${esc(d.message||'')}</span></td>
-    </tr>`).join('');
-  } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="8" class="red" style="padding:12px">${esc(e.message)}</td></tr>`;
+  // Update sidebar dot
+  const dot = document.getElementById(`sidebar-dot-${appId}`);
+  if (dot) { dot.className = 'dot ' + (status.overall || 'not_configured'); }
+
+  // Update page badge
+  const badge = document.getElementById(`meta-overall-${appId}`);
+  if (badge) badge.innerHTML = `<span class="badge ${status.overall || 'not_configured'}">${status.overall || 'unknown'}</span>`;
+
+  if (status.error && !status.ok) return;
+
+  // Services grid
+  const svcGrid = document.getElementById(`services-${appId}`);
+  if (svcGrid && status.services) {
+    svcGrid.innerHTML = Object.entries(status.services).map(([name, state]) => `
+      <div class="service-item">
+        <span class="service-name">${name}</span>
+        <span class="service-state ${state}">${state}</span>
+      </div>
+    `).join('');
   }
-}
 
-async function loadJobs() {
-  const tbody = document.getElementById('jobTable');
-  const banner = document.getElementById('activeJobsBanner');
-  tbody.innerHTML = '<tr><td colspan="7"><div class="loading"><div class="spinner"></div></div></td></tr>';
-  try {
-    const data = await api('/api/jobs');
-    const active = Object.entries(data.active || {});
-    banner.innerHTML = active.length ? `<div class="warn-banner"><div class="spinner" style="border-top-color:var(--yellow)"></div>${active.map(([id,j])=>`<strong>${id}</strong>: ${j.jobType} (PID ${j.pid})`).join(' · ')}<button class="btn btn-ghost btn-sm ml-auto" onclick="loadJobs()">Refresh</button></div>` : '';
-    const jobs = data.recent || [];
-    if (!jobs.length) { tbody.innerHTML = '<tr><td colspan="7"><div class="empty" style="padding:20px">No jobs yet</div></td></tr>'; return; }
-    const tagC = { success:'tag-green', failed:'tag-red', running:'tag-yellow' };
-    tbody.innerHTML = jobs.map(j => `<tr>
-      <td><span class="mono" style="font-size:10px">${esc(j.app)}</span></td>
-      <td><span class="mono" style="font-size:10px;color:var(--blue)">${esc(j.job_type)}</span></td>
-      <td><span class="tag ${tagC[j.status]||'tag-gray'}">${j.status}</span></td>
-      <td><span class="muted" style="font-size:10px">${esc(j.triggered_by||'dashboard')}</span></td>
-      <td><span class="muted mono">${j.duration?(j.duration/1000).toFixed(1)+'s':'—'}</span></td>
-      <td><span class="muted" style="font-size:10px">${ago(j.timestamp)}</span></td>
-      <td>${j.log?`<button class="btn btn-ghost btn-sm" onclick="viewJobLog(${j.id},'${j.app}','${j.job_type}')">log</button>`:''}</td>
-    </tr>`).join('');
-  } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="7" class="red" style="padding:12px">${esc(e.message)}</td></tr>`;
-  }
-}
-
-async function viewJobLog(jobId, app, jobType) {
-  document.getElementById('jobLogTitle').textContent = `${app} — ${jobType}`;
-  document.getElementById('jobLogSub').textContent = `Job #${jobId}`;
-  document.getElementById('jobLogContent').textContent = 'Loading…';
-  openModal('modalJobLog');
-  try {
-    const data = await api('/api/jobs');
-    const job = (data.recent||[]).find(j => j.id === jobId);
-    document.getElementById('jobLogContent').textContent = job?.log || '(no output)';
-    const el = document.getElementById('jobLogContent');
-    el.scrollTop = el.scrollHeight;
-  } catch (e) { document.getElementById('jobLogContent').textContent = `Error: ${e.message}`; }
-}
-
-async function loadMetrics() {
-  const grid = document.getElementById('metricsGrid');
-  grid.innerHTML = '<div class="loading"><div class="spinner"></div>Fetching metrics…</div>';
-  try {
-    const data = await api('/api/metrics');
-    grid.innerHTML = data.map(m => `
-      <div class="card">
-        <div class="card-head"><span class="card-head-title">${esc(m.name||m.app)}</span><span class="muted" style="font-size:9px;font-family:var(--fm)">${esc(m.type||'')}</span></div>
-        <div class="card-body">
-          ${meterHTML('CPU', m.cpu, '%')}
-          ${meterHTML('Memory', m.mem, '%')}
-          ${meterHTML('Disk', m.disk, '%')}
-          <div style="margin-top:8px;font-size:10px"><span class="muted">uptime </span><span class="mono">${esc(m.uptime||'—')}</span></div>
-        </div>
-      </div>`).join('');
-  } catch (e) { grid.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
-}
-
-async function fetchLogs() {
-  const sel = document.getElementById('logAppSel');
-  if (!sel.value) return;
-  const lines = document.getElementById('logLines').value;
-  const viewer = document.getElementById('logViewer');
-  try {
-    const data = await api(`/api/apps/${sel.value}/logs?lines=${lines}`);
-    const colored = (data.content||'').split('\n').map(line => {
-      const e2 = esc(line);
-      if (/error|exception|traceback|critical/i.test(line)) return `<span class="le">${e2}</span>`;
-      if (/warn/i.test(line)) return `<span class="lw">${e2}</span>`;
-      if (/\binfo\b/i.test(line)) return `<span class="li">${e2}</span>`;
-      if (/ok|success|started|ready|complete|running/i.test(line)) return `<span class="lo">${e2}</span>`;
-      return `<span class="ld">${e2}</span>`;
-    }).join('\n');
-    viewer.innerHTML = colored;
-    document.getElementById('logMeta').textContent = `fetched ${new Date(data.timestamp).toLocaleTimeString()} · ${sel.options[sel.selectedIndex]?.text}`;
-    if (document.getElementById('logAutoScroll').checked) viewer.scrollTop = viewer.scrollHeight;
-  } catch (e) { viewer.textContent = `Error: ${e.message}`; }
-}
-
-async function loadScripts() {
-  try {
-    const scripts = await api('/api/scripts');
-    const el = document.getElementById('scriptListEl');
-    el.innerHTML = scripts.length ? scripts.map(s => {
-      const type = s.endsWith('.sh') ? (s.startsWith('setup-')?'setup':s.startsWith('refresh-')?'refresh':'custom') : 'custom';
-      const badgeCls = {setup:'sb-setup',refresh:'sb-refresh',custom:'sb-custom'}[type]||'sb-custom';
-      return `<div class="script-item" id="si-${sid(s)}" onclick="loadScript('${s}')">
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;color:var(--t3)"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-        ${esc(s)}
-        <span class="script-badge ${badgeCls}">${type}</span>
-      </div>`;
-    }).join('') : '<div class="muted" style="font-size:11px;padding:8px">No scripts found</div>';
-  } catch (e) {
-    document.getElementById('scriptListEl').innerHTML = `<div class="red" style="font-size:11px;padding:8px">${esc(e.message)}</div>`;
-  }
-}
-
-async function loadScript(name) {
-  activeScriptName = name;
-  document.querySelectorAll('.script-item').forEach(el => el.classList.remove('active'));
-  document.getElementById(`si-${sid(name)}`)?.classList.add('active');
-  document.getElementById('scriptEdTitle').textContent = name;
-  document.getElementById('scriptSaveBtn').style.display = '';
-  document.getElementById('scriptDelBtn').style.display = '';
-  document.getElementById('scriptEditor').style.display = '';
-  document.getElementById('scriptEmptyMsg').style.display = 'none';
-  document.getElementById('scriptEditor').value = 'Loading…';
-  try {
-    const data = await api(`/api/scripts/${name}`);
-    document.getElementById('scriptEditor').value = data.content;
-  } catch (e) { document.getElementById('scriptEditor').value = `Error: ${e.message}`; }
-}
-
-async function saveScript() {
-  if (!activeScriptName) return;
-  try {
-    await api(`/api/scripts/${activeScriptName}`, { method: 'PUT', body: JSON.stringify({ content: document.getElementById('scriptEditor').value }) });
-    toast('Script saved');
-  } catch (e) { toast(e.message, true); }
-}
-
-async function deleteActiveScript() {
-  if (!activeScriptName || !confirm(`Delete ${activeScriptName}?`)) return;
-  try {
-    await api(`/api/scripts/${activeScriptName}`, { method: 'DELETE' });
-    activeScriptName = null;
-    document.getElementById('scriptEdTitle').textContent = 'select a script';
-    document.getElementById('scriptSaveBtn').style.display = 'none';
-    document.getElementById('scriptDelBtn').style.display = 'none';
-    document.getElementById('scriptEditor').style.display = 'none';
-    document.getElementById('scriptEmptyMsg').style.display = '';
-    toast('Deleted');
-    loadScripts();
-  } catch (e) { toast(e.message, true); }
-}
-
-async function loadSettings() {
-  try {
-    const keys = await api('/api/ssh-keys');
-    document.getElementById('sshKeyListEl').innerHTML = keys.length ? keys.map(k => `
-      <div class="cred-item">
-        <span style="color:var(--green);font-family:var(--fm);font-size:10px;font-weight:700">${esc(k.name)}</span>
-        <span class="muted mono" style="font-size:10px;flex:1">${esc(k.path)}</span>
-        <button class="cred-del" onclick="deleteSSHKey(${k.id})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>
-      </div>`).join('') : '<div class="muted" style="font-size:11px;padding:8px">No SSH keys registered</div>';
-  } catch {}
-}
-
-function openModal(id) { document.getElementById(id).classList.add('open'); }
-function closeModal(id) { document.getElementById(id).classList.remove('open'); }
-
-const APP_TABS = ['basic', 'scripts', 'health', 'advanced'];
-function switchAppTab(tab, el) {
-  APP_TABS.forEach(t => { document.getElementById(`appTab-${t}`).style.display = t===tab ? '' : 'none'; });
-  document.querySelectorAll('.modal#modalApp .tab, #modalApp .tab').forEach(b => b.classList.remove('active'));
-  el.classList.add('active');
-}
-
-function openAddApp() {
-  document.getElementById('modalAppTitle').textContent = 'Add Application';
-  document.getElementById('appEditId').value = '';
-  document.getElementById('appId').disabled = false;
-  ['appId','appName','appTags','cfgHost','cfgSshUser','cfgSshKey','cfgPublicUrl',
-   'cfgRepo','cfgBranch','cfgSetupScript','cfgRefreshScript','cfgDispatchEvent','cfgAppDir','cfgBenchDir','cfgDockerDir',
-   'cfgHealthPort','cfgHealthPath','cfgHealthCmd','cfgLogPaths','cfgLogCmd','cfgSystemdService',
-   'cfgVersionCmd','cfgSshTimeout','cfgAppName'
-  ].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
-  document.getElementById('appType').value = 'frappe';
-  switchAppTab('basic', document.querySelector('#modalApp .tab'));
-  openModal('modalApp');
-}
-
-function openEditApp(appId) {
-  const a = allApps.find(x => x.app===appId||x.id===appId);
-  if (!a) return;
-  const cfg = a.config || {};
-  document.getElementById('modalAppTitle').textContent = 'Edit Application';
-  document.getElementById('appEditId').value = appId;
-  document.getElementById('appId').value = appId;
-  document.getElementById('appId').disabled = true;
-  document.getElementById('appName').value = a.name || '';
-  document.getElementById('appType').value = a.type || 'generic';
-  document.getElementById('appTags').value = (a.tags||[]).join(', ');
-  document.getElementById('cfgHost').value = cfg.host || '';
-  document.getElementById('cfgSshUser').value = cfg.ssh_user || '';
-  document.getElementById('cfgSshKey').value = cfg.ssh_key_path || '';
-  document.getElementById('cfgPublicUrl').value = cfg.public_url || '';
-  document.getElementById('cfgRepo').value = cfg.repo || '';
-  document.getElementById('cfgBranch').value = cfg.branch || '';
-  document.getElementById('cfgSetupScript').value = cfg.setup_script || '';
-  document.getElementById('cfgRefreshScript').value = cfg.refresh_script || '';
-  document.getElementById('cfgDispatchEvent').value = cfg.dispatch_event || '';
-  document.getElementById('cfgAppDir').value = cfg.app_dir || '';
-  document.getElementById('cfgBenchDir').value = cfg.bench_dir || '';
-  document.getElementById('cfgDockerDir').value = cfg.docker_compose_dir || '';
-  document.getElementById('cfgHealthPort').value = cfg.health_port || '';
-  document.getElementById('cfgHealthPath').value = cfg.health_path || '';
-  document.getElementById('cfgHealthCmd').value = cfg.health_command || '';
-  document.getElementById('cfgLogPaths').value = cfg.log_paths || '';
-  document.getElementById('cfgLogCmd').value = cfg.log_command || '';
-  document.getElementById('cfgSystemdService').value = cfg.systemd_service || '';
-  document.getElementById('cfgVersionCmd').value = cfg.version_command || '';
-  document.getElementById('cfgSshTimeout').value = cfg.ssh_timeout || '';
-  document.getElementById('cfgAppName').value = cfg.app_name || '';
-  switchAppTab('basic', document.querySelector('#modalApp .tab'));
-  openModal('modalApp');
-}
-
-function getAppFormConfig() {
-  const cfg = {};
-  const map = {
-    cfgHost:'host', cfgSshUser:'ssh_user', cfgSshKey:'ssh_key_path', cfgPublicUrl:'public_url',
-    cfgRepo:'repo', cfgBranch:'branch', cfgSetupScript:'setup_script', cfgRefreshScript:'refresh_script',
-    cfgDispatchEvent:'dispatch_event', cfgAppDir:'app_dir', cfgBenchDir:'bench_dir', cfgDockerDir:'docker_compose_dir',
-    cfgHealthPort:'health_port', cfgHealthPath:'health_path', cfgHealthCmd:'health_command',
-    cfgLogPaths:'log_paths', cfgLogCmd:'log_command', cfgSystemdService:'systemd_service',
-    cfgVersionCmd:'version_command', cfgSshTimeout:'ssh_timeout', cfgAppName:'app_name',
-  };
-  Object.entries(map).forEach(([elId, key]) => {
-    const val = document.getElementById(elId)?.value?.trim();
-    if (val) cfg[key] = val;
-  });
-  if (!cfg.branch) cfg.branch = 'main';
-  if (!cfg.health_path) cfg.health_path = '/';
-  return cfg;
-}
-
-async function saveApp() {
-  const editId = document.getElementById('appEditId').value;
-  const id = editId || document.getElementById('appId').value.trim().toLowerCase();
-  const name = document.getElementById('appName').value.trim();
-  const type = document.getElementById('appType').value;
-  const tags = document.getElementById('appTags').value.split(',').map(t=>t.trim()).filter(Boolean);
-  if (!id || !name) { toast('App ID and name are required', true); return; }
-  const config = getAppFormConfig();
-  try {
-    if (editId) {
-      await api(`/api/apps/${editId}`, { method: 'PUT', body: JSON.stringify({ name, type, config, tags }) });
+  // Containers table
+  const ctrTable = document.getElementById(`containers-${appId}`);
+  if (ctrTable && status.containers !== undefined) {
+    if (!status.containers.length) {
+      ctrTable.innerHTML = '<div class="empty"><strong>No containers running</strong></div>';
     } else {
-      await api('/api/apps', { method: 'POST', body: JSON.stringify({ id, name, type, config, tags }) });
+      ctrTable.innerHTML = `<table><thead><tr><th>NAME</th><th>STATUS</th><th>PORTS</th></tr></thead><tbody>
+        ${status.containers.map(c => `<tr><td style="font-family:var(--font-mono)">${c.name}</td><td><span class="badge ${c.status?.includes('Up') ? 'active' : 'failed'}">${c.status}</span></td><td style="font-family:var(--font-mono);font-size:10px">${c.ports || '—'}</td></tr>`).join('')}
+      </tbody></table>`;
     }
-    closeModal('modalApp');
-    toast('Application saved');
-    refreshAll();
-  } catch (e) { toast(e.message, true); }
+  }
+
+  // Metrics
+  if (status.load) {
+    const load = parseFloat(status.load.l1) || 0;
+    const loadPct = Math.min(100, load * 50);
+    el(`m-cpu-${appId}`, status.load.l1 || '—');
+    elStyle(`mb-cpu-${appId}`, 'width', loadPct + '%');
+  }
+  if (status.mem && status.mem.total_mb) {
+    const pct = Math.round((status.mem.used_mb / status.mem.total_mb) * 100);
+    const usedGB = (status.mem.used_mb / 1024).toFixed(1);
+    const totalGB = (status.mem.total_mb / 1024).toFixed(1);
+    el(`m-mem-${appId}`, `${usedGB}G`);
+    elStyle(`mb-mem-${appId}`, 'width', pct + '%');
+  }
+  if (status.disk) {
+    el(`m-disk-${appId}`, status.disk.used || '—');
+    const pct = parseInt(status.disk.pct) || 0;
+    elStyle(`mb-disk-${appId}`, 'width', pct + '%');
+  }
+  if (status.active_services !== undefined) {
+    el(`m-svc-${appId}`, `${status.active_services}/${status.total_services}`);
+  }
+
+  // Cache in apps array
+  const a = apps.find(x => x.app_id === appId);
+  if (a) a.status = status;
 }
 
-async function testConnection() {
-  const id = document.getElementById('appEditId').value || document.getElementById('appId').value.trim();
-  if (!id) { toast('Save the app first or enter an App ID', true); return; }
-  const btn = document.getElementById('testConnBtn');
-  btn.textContent = 'Testing…'; btn.disabled = true;
-  try {
-    const data = await api(`/api/apps/${id}/test-connection`, { method: 'POST' });
-    toast(data.ok ? `SSH OK: ${data.info?.split('\n')[0]||'connected'}` : `Failed: ${data.error}`, !data.ok);
-  } catch (e) { toast(e.message, true); }
-  finally { btn.innerHTML = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> Test SSH'; btn.disabled = false; }
+// ──────────────────────────────────────────────────────────────
+//  Logs
+// ──────────────────────────────────────────────────────────────
+async function loadLogs(appId) {
+  const service = document.getElementById(`log-service-${appId}`)?.value || 'plg_app';
+  const lines = document.getElementById(`log-lines-${appId}`)?.value || 100;
+  const terminal = document.getElementById(`logs-terminal-${appId}`);
+  if (!terminal) return;
+  terminal.textContent = 'Fetching logs...';
+
+  const r = await api('GET', `/api/apps/${appId}/logs?service=${service}&lines=${lines}`);
+  if (!r) { terminal.textContent = 'Error fetching logs'; return; }
+  if (!r.logs?.length) { terminal.textContent = '(no logs available)'; return; }
+
+  terminal.innerHTML = r.logs.map(line => {
+    const cls = line.includes('ERROR') || line.includes('error') ? 'log-error'
+              : line.includes('WARN') || line.includes('warn') ? 'log-warn'
+              : line.includes('INFO') || line.includes('info') ? 'log-info'
+              : 'log-dim';
+    return `<span class="${cls}">${escHtml(line)}</span>`;
+  }).join('\n');
+  terminal.scrollTop = terminal.scrollHeight;
 }
 
-function updateAppTypeHints() {}
+// ──────────────────────────────────────────────────────────────
+//  GitHub
+// ──────────────────────────────────────────────────────────────
+async function loadGithub(appId) {
+  const r = await api('GET', `/api/apps/${appId}/github`);
+  if (!r) return;
 
-async function openCreds(appId) {
-  document.getElementById('credsAppId').value = appId;
-  const name = allApps.find(a=>a.app===appId||a.id===appId)?.name || appId;
-  document.getElementById('credsTitle').textContent = `Env Vars — ${name}`;
-  openModal('modalCreds');
-  loadCreds(appId);
+  // Branch info
+  const branchEl = document.getElementById(`github-branch-${appId}`);
+  if (branchEl) {
+    if (r.branch_info) {
+      branchEl.innerHTML = `
+        <div style="padding:16px;background:var(--bg1);border:1px solid var(--border)">
+          <div style="font-family:var(--font-mono);font-size:12px;color:var(--text2);margin-bottom:6px">
+            <span style="color:var(--accent)">${r.branch_info.branch}</span>
+            @ <span style="color:var(--text)">${r.branch_info.sha_short}</span>
+          </div>
+          <div style="font-size:13px;margin-bottom:4px">${escHtml(r.branch_info.message || '')}</div>
+          <div style="font-family:var(--font-mono);font-size:10px;color:var(--text3)">${r.branch_info.author} · ${formatDate(r.branch_info.date)}</div>
+        </div>`;
+      // Update meta
+      const metaBranch = document.getElementById(`meta-branch-${appId}`);
+      if (metaBranch) metaBranch.textContent = `branch: ${r.branch_info.branch} @ ${r.branch_info.sha_short}`;
+    } else {
+      branchEl.innerHTML = '<div class="empty"><strong>No repo configured</strong>Set PLG_GIT_REPO in config</div>';
+    }
+  }
+
+  // Commits
+  const commitsEl = document.getElementById(`github-commits-${appId}`);
+  if (commitsEl && r.commits?.length) {
+    commitsEl.innerHTML = r.commits.map(c => `
+      <div class="commit-item">
+        <span class="commit-sha">${c.sha}</span>
+        <div>
+          <div class="commit-msg">${escHtml(c.message)}</div>
+          <div class="commit-meta">${c.author} · ${formatDate(c.date)}</div>
+        </div>
+      </div>
+    `).join('');
+  } else if (commitsEl) {
+    commitsEl.innerHTML = '<div class="empty">No commit data available</div>';
+  }
+
+  // Branches
+  const branchesEl = document.getElementById(`github-branches-${appId}`);
+  if (branchesEl && r.branches?.length) {
+    branchesEl.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:6px">` +
+      r.branches.map(b => `
+        <span style="font-family:var(--font-mono);font-size:11px;padding:4px 10px;background:var(--bg1);border:1px solid ${b.name === r.branch ? 'var(--accent)' : 'var(--border)'};color:${b.name === r.branch ? 'var(--accent)' : 'var(--text2)'}">
+          ${b.name} ${b.sha_short ? `<span style="color:var(--text3)">${b.sha_short}</span>` : ''}
+        </span>`).join('') + '</div>';
+  }
 }
 
-async function loadCreds(appId) {
-  const list = document.getElementById('credsList');
-  list.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
-  try {
-    const creds = await api(`/api/apps/${appId}/credentials`);
-    list.innerHTML = creds.length ? creds.map(c => `
-      <div class="cred-item">
-        <span class="cred-key">${esc(c.key_name)}</span>
-        <span class="cred-val ${c.is_secret?'cred-secret':''}">${c.is_secret?'••••••':esc(c.value)}</span>
-        ${c.is_secret?'<span class="tag tag-purple" style="flex-shrink:0">secret</span>':''}
-        <button class="cred-del" onclick="deleteCred('${appId}','${c.key_name}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>
-      </div>`).join('') : '<div class="muted" style="font-size:11px;padding:6px">No variables yet</div>';
-  } catch (e) { list.innerHTML = `<div class="red" style="font-size:11px">${esc(e.message)}</div>`; }
+// ──────────────────────────────────────────────────────────────
+//  Deploy
+// ──────────────────────────────────────────────────────────────
+function openDeployModal(appId) {
+  const app_ = apps.find(a => a.app_id === appId);
+  if (!app_ || !app_.server_host) {
+    flash('Configure server host first (Config tab)', 'error');
+    switchTab(appId, 'config');
+    return;
+  }
+
+  // Show overlay immediately with options
+  const overlay = document.getElementById('deploy-overlay');
+  const logEl = document.getElementById('deploy-overlay-log');
+  const title = document.getElementById('deploy-overlay-title');
+  const badge = document.getElementById('deploy-overlay-badge');
+  const meta = document.getElementById('deploy-overlay-meta');
+
+  title.textContent = `Deploy — ${app_.app_name}`;
+  badge.textContent = 'ready';
+  badge.className = 'badge not_configured';
+  meta.textContent = `Target: ${app_.server_user || 'azureuser'}@${app_.server_host}`;
+  logEl.innerHTML = `<span class="log-dim">Choose deploy type and click START DEPLOY.</span>
+
+`;
+  overlay.classList.add('open');
+
+  // Build controls inside log area prefix
+  const controlsId = `deploy-controls-${appId}-${Date.now()}`;
+  const controls = document.createElement('div');
+  controls.style.cssText = 'padding:12px 20px;border-bottom:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap';
+  controls.innerHTML = `
+    <button class="btn btn-primary" id="btn-start-deploy" onclick="startDeploy('${appId}', [])">▶ FULL DEPLOY</button>
+    <button class="btn btn-ghost" onclick="startDeploy('${appId}', ['--update'])">↺ UPDATE CODE</button>
+    <button class="btn btn-ghost" onclick="startDeploy('${appId}', ['--update-config'])">⚙ UPDATE CONFIG</button>
+    <button class="btn btn-ghost" onclick="startDeploy('${appId}', ['--restart'])">⟳ RESTART</button>
+    <button class="btn btn-ghost" onclick="startDeploy('${appId}', ['--status'])">◎ STATUS</button>
+    <button class="btn btn-ghost" onclick="startDeploy('${appId}', ['--clean-only'])">✕ CLEAN ONLY</button>
+    <button class="btn btn-ghost" onclick="startDeploy('${appId}', ['--steps', '1,2,3'])">STEPS 1-3</button>
+  `;
+  logEl.parentNode.insertBefore(controls, logEl);
 }
 
-async function addCred() {
-  const appId = document.getElementById('credsAppId').value;
-  const key = document.getElementById('newCredKey').value.trim().toUpperCase();
-  const val = document.getElementById('newCredVal').value;
-  const secret = document.getElementById('newCredSecret').checked;
-  if (!key) { toast('Key name required', true); return; }
-  try {
-    await api(`/api/apps/${appId}/credentials`, { method: 'POST', body: JSON.stringify({ key_name: key, value: val, is_secret: secret }) });
-    document.getElementById('newCredKey').value = '';
-    document.getElementById('newCredVal').value = '';
-    document.getElementById('newCredSecret').checked = false;
-    loadCreds(appId);
-  } catch (e) { toast(e.message, true); }
+async function startDeploy(appId, flags) {
+  const logEl = document.getElementById('deploy-overlay-log');
+  const badge = document.getElementById('deploy-overlay-badge');
+  // Remove controls
+  document.getElementById('deploy-overlay').querySelectorAll('.btn').forEach(b => b.disabled = true);
+
+  logEl.textContent = '';
+  badge.textContent = 'running';
+  badge.className = 'badge running';
+
+  const r = await api('POST', `/api/apps/${appId}/deploy`, { flags });
+  if (!r?.ok) {
+    logEl.textContent = 'Error: ' + (r?.error || 'Failed to start deploy');
+    badge.textContent = 'failed'; badge.className = 'badge failed';
+    return;
+  }
+  activeDeployId = r.deploy_id;
+  appendDeployLog(`[#${r.deploy_id}] Deploy started — flags: ${flags.join(' ') || '(none)'}\n`);
 }
 
-async function deleteCred(appId, key) {
-  try {
-    await api(`/api/apps/${appId}/credentials/${encodeURIComponent(key)}`, { method: 'DELETE' });
-    loadCreds(appId);
-  } catch (e) { toast(e.message, true); }
+function appendDeployLog(chunk) {
+  const logEl = document.getElementById('deploy-overlay-log');
+  if (!logEl) return;
+  // Colorize
+  const colored = chunk
+    .replace(/\[OK\]/g, '<span class="log-info">[OK]</span>')
+    .replace(/\[WARN\]/g, '<span class="log-warn">[WARN]</span>')
+    .replace(/\[ERROR\]/g, '<span class="log-error">[ERROR]</span>')
+    .replace(/\[INFO\]/g, '<span class="log-dim">[INFO]</span>')
+    .replace(/━+.*━+/g, s => `<span style="color:var(--accent)">${s}</span>`);
+  logEl.innerHTML += colored;
+  logEl.scrollTop = logEl.scrollHeight;
 }
 
-function openDeploy(appId) {
-  pendingDeployApp = appId;
-  const name = allApps.find(a=>a.app===appId||a.id===appId)?.name || appId;
-  document.getElementById('deployModalSub').textContent = `Deploy ${name} via GitHub Actions`;
-  document.getElementById('deployConfirmBtn').textContent = 'Trigger';
-  document.getElementById('deployConfirmBtn').disabled = false;
-  openModal('modalDeploy');
+function closeDeployOverlay() {
+  document.getElementById('deploy-overlay').classList.remove('open');
+  activeDeployId = null;
+  // remove any injected controls
+  document.querySelectorAll('#deploy-overlay > .detail-panel > div:not(.detail-header):not(.detail-body)').forEach(e => e.remove());
 }
 
-async function confirmDeploy() {
-  if (!pendingDeployApp) return;
-  const btn = document.getElementById('deployConfirmBtn');
-  btn.disabled = true; btn.textContent = 'Sending…';
-  try {
-    await api(`/api/apps/${pendingDeployApp}/deploy`, { method: 'POST' });
-    closeModal('modalDeploy');
-    toast('Deploy triggered');
-    nav('deployments');
-  } catch (e) { btn.disabled = false; btn.textContent = 'Trigger'; toast(e.message, true); }
+// ──────────────────────────────────────────────────────────────
+//  Deployment History
+// ──────────────────────────────────────────────────────────────
+async function refreshAppDeployments(appId) {
+  const container = document.getElementById(`app-deploys-${appId}`);
+  if (!container) return;
+  const deploys = await api('GET', `/api/apps/${appId}/deployments`);
+  if (!deploys?.length) {
+    container.innerHTML = '<div class="empty"><strong>No deployments yet</strong></div>';
+    return;
+  }
+  container.innerHTML = deploys.map(d => `
+    <div class="deploy-item" onclick="viewDeployLog(${d.id})">
+      <span class="deploy-id">#${d.id}</span>
+      <span class="badge ${d.status}">${d.status}</span>
+      <span class="deploy-trigger">${d.trigger}</span>
+      <span style="flex:1;font-family:var(--font-mono);font-size:10px;color:var(--text3)">${formatDate(d.started_at)}</span>
+      <span class="deploy-dur">${deployDuration(d)}</span>
+    </div>
+  `).join('');
 }
 
-async function triggerSetup(appId) {
-  const name = allApps.find(a=>a.app===appId||a.id===appId)?.name || appId;
-  if (!confirm(`Run full setup for ${name}? This may take 20–40 min.`)) return;
-  try {
-    const data = await api(`/api/apps/${appId}/setup`, { method: 'POST' });
-    toast(`Setup started (PID ${data.pid})`);
-    nav('jobs');
-    setTimeout(loadJobs, 1500);
-  } catch (e) { toast(e.message, true); }
+async function viewDeployLog(id) {
+  const d = await api('GET', `/api/deployments/${id}`);
+  if (!d) return;
+  const overlay = document.getElementById('deploy-overlay');
+  const logEl = document.getElementById('deploy-overlay-log');
+  const title = document.getElementById('deploy-overlay-title');
+  const badge = document.getElementById('deploy-overlay-badge');
+  const meta = document.getElementById('deploy-overlay-meta');
+
+  title.textContent = `Deployment #${id}`;
+  badge.textContent = d.status; badge.className = `badge ${d.status}`;
+  meta.textContent = `App: ${d.app_id} · Trigger: ${d.trigger} · ${formatDate(d.started_at)}`;
+  logEl.textContent = d.log || '(no log)';
+  logEl.scrollTop = logEl.scrollHeight;
+  overlay.classList.add('open');
 }
 
-async function triggerRefresh(appId) {
-  try {
-    const data = await api(`/api/apps/${appId}/refresh`, { method: 'POST' });
-    toast(`Refresh started (PID ${data.pid})`);
-    nav('jobs');
-    setTimeout(loadJobs, 1500);
-  } catch (e) { toast(e.message, true); }
+async function loadAllDeployments() {
+  const container = document.getElementById('all-deployments-list');
+  if (!container) return;
+  const deploys = await api('GET', '/api/deployments');
+  if (!deploys?.length) {
+    container.innerHTML = '<div class="empty"><strong>No deployments yet</strong></div>';
+    return;
+  }
+  container.innerHTML = deploys.map(d => `
+    <div class="deploy-item" onclick="viewDeployLog(${d.id})">
+      <span class="deploy-id">#${d.id}</span>
+      <span class="deploy-app">${d.app_name || d.app_id}</span>
+      <span class="badge ${d.status}">${d.status}</span>
+      <span class="deploy-trigger">${d.trigger}</span>
+      <span class="deploy-time">${formatDate(d.started_at)}</span>
+      <span class="deploy-dur">${deployDuration(d)}</span>
+    </div>
+  `).join('');
 }
 
-async function killJob(appId) {
-  if (!confirm('Kill the active job?')) return;
-  try {
-    await api(`/api/apps/${appId}/kill`, { method: 'POST' });
-    toast('Kill signal sent');
-    setTimeout(() => navApp(appId), 1000);
-  } catch (e) { toast(e.message, true); }
+// ──────────────────────────────────────────────────────────────
+//  Config
+// ──────────────────────────────────────────────────────────────
+function buildEnvEditor(appId, env) {
+  const container = document.getElementById(`env-editor-${appId}`);
+  if (!container) return;
+  container.innerHTML = '';
+  for (const [k, v] of Object.entries(env)) {
+    addEnvRowWithValue(appId, k, v);
+  }
 }
 
-function openRunScript(appId) {
-  pendingRunScriptApp = appId;
-  const name = allApps.find(a=>a.app===appId||a.id===appId)?.name || appId;
-  document.getElementById('runScriptSub').textContent = `Run on ${name}`;
-  api('/api/scripts').then(scripts => {
-    document.getElementById('runScriptName').innerHTML = scripts.map(s => `<option value="${s}">${s}</option>`).join('');
+function addEnvRow(appId) {
+  addEnvRowWithValue(appId, '', '');
+}
+
+function addEnvRowWithValue(appId, k, v) {
+  const container = document.getElementById(`env-editor-${appId}`);
+  if (!container) return;
+  const row = document.createElement('div');
+  row.className = 'env-row';
+  const sensitive = ['PASSWORD', 'SECRET', 'KEY', 'PASS'].some(s => k.includes(s));
+  row.innerHTML = `
+    <input class="env-val" placeholder="VARIABLE_NAME" value="${escHtml(k)}" style="color:var(--text3)">
+    <div style="display:flex;gap:4px">
+      <input class="env-val" placeholder="value" value="${escHtml(String(v))}" type="${sensitive ? 'password' : 'text'}" style="flex:1">
+      <button class="btn btn-ghost" style="padding:4px 8px;font-size:10px" onclick="this.closest('.env-row').remove()">✕</button>
+    </div>`;
+  container.appendChild(row);
+}
+
+function getEnvFromEditor(appId) {
+  const container = document.getElementById(`env-editor-${appId}`);
+  if (!container) return {};
+  const env = {};
+  container.querySelectorAll('.env-row').forEach(row => {
+    const inputs = row.querySelectorAll('input');
+    const k = inputs[0]?.value?.trim();
+    const v = inputs[1]?.value;
+    if (k) env[k] = v;
   });
-  document.getElementById('runScriptJobType').value = 'custom';
-  openModal('modalRunScript');
+  return env;
 }
 
-async function confirmRunScript() {
-  const scriptName = document.getElementById('runScriptName').value;
-  const jobType = document.getElementById('runScriptJobType').value || 'custom';
-  try {
-    const data = await api(`/api/apps/${pendingRunScriptApp}/run-script`, { method: 'POST', body: JSON.stringify({ script_name: scriptName, job_type: jobType }) });
-    closeModal('modalRunScript');
-    toast(`Script started (PID ${data.pid})`);
-    nav('jobs');
-    setTimeout(loadJobs, 1500);
-  } catch (e) { toast(e.message, true); }
-}
+async function saveConfig(appId) {
+  const env = getEnvFromEditor(appId);
+  const host = document.getElementById(`cfg-host-${appId}`)?.value?.trim();
+  const port = document.getElementById(`cfg-port-${appId}`)?.value?.trim();
+  const user = document.getElementById(`cfg-user-${appId}`)?.value?.trim();
+  const keyPath = document.getElementById(`cfg-key-${appId}`)?.value;
 
-function openNewScript() {
-  document.getElementById('newScriptName').value = '';
-  document.getElementById('newScriptType').value = 'setup';
-  document.getElementById('newScriptTemplate').value = '';
-  const appSel = document.getElementById('newScriptApp');
-  appSel.innerHTML = '<option value="">— none —</option>' + allApps.map(a => `<option value="${a.app}">${esc(a.name)}</option>`).join('');
-  openModal('modalNewScript');
-}
+  const r = await api('POST', `/api/apps/${appId}/config`, {
+    server_host: host,
+    ssh_port: parseInt(port) || 22,
+    server_user: user || 'azureuser',
+    ssh_key_path: keyPath,
+    env,
+  });
 
-function applyScriptTemplate() {
-  const tpl = document.getElementById('newScriptTemplate').value;
-  const nameEl = document.getElementById('newScriptName');
-  const typeEl = document.getElementById('newScriptType');
-  const templates = {
-    'frappe-setup': { name: 'setup-frappe.sh', type: 'setup', content: `#!/bin/bash
-set -euo pipefail
-echo "=== Frappe Setup: $(date) ==="
-sudo -u $TAP_USER bash -c "cd /home/$TAP_USER && bench get-app $TAP_APP $TAP_REPO --branch $TAP_BRANCH || bench update --reset"
-sudo -u $TAP_USER bash -c "cd /home/$TAP_USER/frappe-bench && bench --site $TAP_SITE install-app $TAP_APP"
-sudo -u $TAP_USER bash -c "cd /home/$TAP_USER/frappe-bench && bench --site $TAP_SITE migrate"
-sudo supervisorctl restart all
-echo "=== Setup complete ==="
-` },
-    'frappe-refresh': { name: 'refresh-frappe.sh', type: 'refresh', content: `#!/bin/bash
-set -euo pipefail
-echo "=== Frappe Refresh: $(date) ==="
-sudo -u $TAP_USER bash -c "cd /home/$TAP_USER/frappe-bench && bench update --apps $TAP_APP --branch $TAP_BRANCH --reset"
-sudo -u $TAP_USER bash -c "cd /home/$TAP_USER/frappe-bench && bench --site $TAP_SITE migrate"
-sudo -u $TAP_USER bash -c "cd /home/$TAP_USER/frappe-bench && bench build --app $TAP_APP" || true
-sudo supervisorctl restart all
-echo "=== Refresh complete ==="
-` },
-    'docker-setup': { name: 'setup-docker.sh', type: 'setup', content: `#!/bin/bash
-set -euo pipefail
-echo "=== Docker Setup: $(date) ==="
-cd $DOCKER_DIR
-git pull origin $APP_BRANCH
-docker compose pull
-docker compose up -d --build --remove-orphans
-docker compose ps
-echo "=== Setup complete ==="
-` },
-    'docker-refresh': { name: 'refresh-docker.sh', type: 'refresh', content: `#!/bin/bash
-set -euo pipefail
-echo "=== Docker Refresh: $(date) ==="
-cd $DOCKER_DIR
-git pull origin $APP_BRANCH
-docker compose pull
-docker compose up -d --build --remove-orphans
-docker system prune -f
-echo "=== Refresh complete ==="
-` },
-    'fastapi-refresh': { name: 'refresh-fastapi.sh', type: 'refresh', content: `#!/bin/bash
-set -euo pipefail
-echo "=== FastAPI Refresh: $(date) ==="
-cd $APP_DIR
-git pull origin $APP_BRANCH
-source .venv/bin/activate 2>/dev/null || python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt -q
-sudo systemctl restart $APP_ID || sudo supervisorctl restart $APP_ID || true
-echo "=== Refresh complete ==="
-` },
-  };
-  if (templates[tpl]) {
-    if (!nameEl.value) nameEl.value = templates[tpl].name;
-    typeEl.value = templates[tpl].type;
-    window._pendingTemplateContent = templates[tpl].content;
+  if (r?.ok) {
+    flash('Config saved', 'success');
+    // Update apps cache
+    await loadApps();
+    buildAppPages();
+    // Reload page
+    loadAppPage(appId);
+  } else {
+    flash(r?.error || 'Save failed', 'error');
   }
 }
 
-async function createNewScript() {
-  const name = document.getElementById('newScriptName').value.trim();
-  const type = document.getElementById('newScriptType').value;
-  const appId = document.getElementById('newScriptApp').value;
-  if (!name) { toast('Filename required', true); return; }
-  const safeName = name.endsWith('.sh') ? name : name + '.sh';
-  const content = window._pendingTemplateContent || `#!/bin/bash\nset -euo pipefail\necho "=== ${safeName}: $(date) ==="\n\n# Your script here\n\necho "=== Done ==="\n`;
-  window._pendingTemplateContent = null;
-  try {
-    await api('/api/scripts', { method: 'POST', body: JSON.stringify({ name: safeName, content, script_type: type, app_id: appId || null }) });
-    closeModal('modalNewScript');
-    toast('Script created');
-    loadScripts();
-    setTimeout(() => loadScript(safeName), 300);
-  } catch (e) { toast(e.message, true); }
-}
+async function testSSH(appId) {
+  const resultEl = document.getElementById(`ssh-test-result-${appId}`);
+  if (resultEl) { resultEl.textContent = 'Testing...'; resultEl.style.color = 'var(--text3)'; }
 
-function openAddSSHKey() { openModal('modalSSHKey'); }
-
-async function addSSHKey() {
-  const name = document.getElementById('sshKeyName').value.trim();
-  const path2 = document.getElementById('sshKeyPath').value.trim();
-  if (!name || !path2) { toast('Name and path required', true); return; }
-  try {
-    await api('/api/ssh-keys', { method: 'POST', body: JSON.stringify({ name, path: path2 }) });
-    closeModal('modalSSHKey');
-    toast('SSH key registered');
-    loadSettings();
-  } catch (e) { toast(e.message, true); }
-}
-
-async function deleteSSHKey(id) {
-  if (!confirm('Remove this SSH key?')) return;
-  try { await api(`/api/ssh-keys/${id}`, { method: 'DELETE' }); loadSettings(); }
-  catch (e) { toast(e.message, true); }
-}
-
-function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-function sid(s) { return s.replace(/[^a-zA-Z0-9]/g,'_'); }
-
-function ago(ts) {
-  const d = Date.now() - ts;
-  if (d < 60000) return 'just now';
-  if (d < 3600000) return `${Math.floor(d/60000)}m ago`;
-  if (d < 86400000) return `${Math.floor(d/3600000)}h ago`;
-  return `${Math.floor(d/86400000)}d ago`;
-}
-
-let _toastTimer;
-function toast(msg, err = false) {
-  clearTimeout(_toastTimer);
-  let el = document.getElementById('_toast');
-  if (!el) {
-    el = document.createElement('div');
-    el.id = '_toast';
-    el.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:999;padding:9px 14px;border-radius:6px;font-size:11px;font-weight:600;pointer-events:none;transition:opacity .3s;font-family:var(--fm)';
-    document.body.appendChild(el);
+  const r = await api('POST', `/api/apps/${appId}/ssh-test`);
+  if (!r) return;
+  if (r.ok) {
+    if (resultEl) { resultEl.textContent = '✓ Connected'; resultEl.style.color = 'var(--green)'; }
+    flash('SSH connection successful', 'success');
+  } else {
+    if (resultEl) { resultEl.textContent = '✗ Failed: ' + (r.error || ''); resultEl.style.color = 'var(--red)'; }
+    flash('SSH failed: ' + r.error, 'error');
   }
+}
+
+// ──────────────────────────────────────────────────────────────
+//  SSH Keys
+// ──────────────────────────────────────────────────────────────
+async function loadKeys() {
+  const keys = await api('GET', '/api/keys');
+  const container = document.getElementById('keys-list');
+  if (!container) return;
+  if (!keys?.length) {
+    container.innerHTML = '<div class="empty"><strong>No SSH Keys</strong>Upload a .pem or .key file to get started</div>';
+    return;
+  }
+  container.innerHTML = keys.map(k => `
+    <div class="key-item">
+      <div>
+        <div class="key-name">${escHtml(k.name)}</div>
+        <div class="key-path">${escHtml(k.file_path)}</div>
+      </div>
+      <div class="key-date">${formatDate(k.uploaded_at)}</div>
+      <button class="btn btn-danger" style="font-size:10px;padding:4px 10px" onclick="deleteKey(${k.id})">DELETE</button>
+    </div>
+  `).join('');
+}
+
+async function uploadKey(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const name = document.getElementById('key-name-input')?.value?.trim() || file.name.replace(/\.pem$|\.key$/i, '');
+
+  const fd = new FormData();
+  fd.append('keyfile', file);
+  fd.append('name', name);
+
+  const r = await fetch('/api/keys/upload', { method: 'POST', body: fd });
+  const data = await r.json();
+  if (data.ok) { flash('Key uploaded: ' + data.name, 'success'); loadKeys(); }
+  else flash(data.error || 'Upload failed', 'error');
+  input.value = '';
+}
+
+async function deleteKey(id) {
+  if (!confirm('Delete this key?')) return;
+  await api('DELETE', `/api/keys/${id}`);
+  loadKeys();
+  flash('Key deleted', 'success');
+}
+
+// ──────────────────────────────────────────────────────────────
+//  Overview
+// ──────────────────────────────────────────────────────────────
+async function loadOverviewData() {
+  // Stats
+  const deploys = await api('GET', '/api/deployments');
+  const d = document.getElementById('stat-deploys');
+  if (d) d.textContent = deploys?.length || 0;
+
+  if (deploys?.length) {
+    const last = deploys[0];
+    el('stat-last', formatDate(last.started_at, true));
+    el('stat-last-app', last.app_name || last.app_id);
+  }
+
+  // Overview cards
+  const grid = document.getElementById('overview-apps-grid');
+  if (grid) {
+    grid.innerHTML = apps.map(app => {
+      const status = app.status || db?.getStatus?.(app.app_id) || {};
+      const overall = status.overall || 'not_configured';
+      return `
+        <div style="background:var(--bg);padding:20px 24px;cursor:pointer;border-bottom:1px solid var(--border)" onclick="showPage('${app.app_id}')">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+            <div style="font-family:var(--font-mono);font-size:11px;font-weight:600;color:var(--accent);width:32px;height:32px;background:var(--accent-dim);border:1px solid var(--accent);display:flex;align-items:center;justify-content:center">${app.app_id.toUpperCase()}</div>
+            <div>
+              <div style="font-size:12px;font-weight:500">${app.app_name.split('—')[0].trim()}</div>
+              <div style="font-family:var(--font-mono);font-size:10px;color:var(--text3)">${app.server_host || 'not configured'}</div>
+            </div>
+            <span class="badge ${overall}" style="margin-left:auto">${overall}</span>
+          </div>
+          ${status.active_services !== undefined ? `<div style="font-family:var(--font-mono);font-size:10px;color:var(--text3)">${status.active_services}/${status.total_services} services · Load: ${status.load?.l1 || '—'}</div>` : `<div style="font-family:var(--font-mono);font-size:10px;color:var(--text3)">${app.server_host ? 'Click to fetch status' : 'Configure server to connect'}</div>`}
+        </div>`;
+    }).join('');
+  }
+
+  // Recent deploys
+  const recentEl = document.getElementById('overview-recent-deploys');
+  if (recentEl && deploys?.length) {
+    recentEl.innerHTML = deploys.slice(0, 8).map(d => `
+      <div class="deploy-item" onclick="viewDeployLog(${d.id})">
+        <span class="deploy-id">#${d.id}</span>
+        <span class="deploy-app">${d.app_name || d.app_id}</span>
+        <span class="badge ${d.status}">${d.status}</span>
+        <span class="deploy-trigger">${d.trigger}</span>
+        <span class="deploy-time">${formatDate(d.started_at)}</span>
+        <span class="deploy-dur">${deployDuration(d)}</span>
+      </div>`).join('');
+  } else if (recentEl) {
+    recentEl.innerHTML = '<div class="empty"><strong>No deployments yet</strong>Deploy an application to see history here</div>';
+  }
+
+  updateOverviewStats();
+  el('overview-meta', `Last updated ${new Date().toLocaleTimeString()}`);
+}
+
+function updateOverviewStats() {
+  const healthy = apps.filter(a => a.status?.overall === 'healthy').length;
+  el('stat-healthy', healthy);
+}
+
+// ──────────────────────────────────────────────────────────────
+//  Utilities
+// ──────────────────────────────────────────────────────────────
+async function api(method, url, body) {
+  try {
+    const opts = { method, headers: { 'Content-Type': 'application/json' } };
+    if (body) opts.body = JSON.stringify(body);
+    const r = await fetch(url, opts);
+    if (r.status === 401) { location.reload(); return null; }
+    return await r.json();
+  } catch { return null; }
+}
+
+function val(id) { return document.getElementById(id)?.value || ''; }
+function el(id, text) { const e = document.getElementById(id); if (e) e.textContent = text; }
+function elStyle(id, prop, val) { const e = document.getElementById(id); if (e) e.style[prop] = val; }
+function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function formatDate(str, short = false) {
+  if (!str) return '—';
+  const d = new Date(str);
+  if (short) return d.toLocaleDateString('en-GB', { day:'2-digit', month:'short' });
+  const now = new Date();
+  const diff = (now - d) / 1000;
+  if (diff < 60) return `${Math.round(diff)}s ago`;
+  if (diff < 3600) return `${Math.round(diff/60)}m ago`;
+  if (diff < 86400) return `${Math.round(diff/3600)}h ago`;
+  return d.toLocaleDateString('en-GB', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' });
+}
+
+function deployDuration(d) {
+  if (!d.finished_at || !d.started_at) return d.status === 'running' ? 'running' : '—';
+  const ms = new Date(d.finished_at) - new Date(d.started_at);
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s/60)}m${s%60}s`;
+}
+
+function flash(msg, type = 'info') {
+  const el = document.createElement('div');
+  el.className = `flash ${type}`;
   el.textContent = msg;
-  el.style.background = err ? 'var(--red2)' : 'var(--green2)';
-  el.style.border = `1px solid ${err ? 'rgba(255,68,85,.3)' : 'rgba(0,232,122,.3)'}`;
-  el.style.color = err ? 'var(--red)' : 'var(--green)';
-  el.style.opacity = '1';
-  _toastTimer = setTimeout(() => { el.style.opacity = '0'; }, 3500);
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3500);
 }
 
-function startSSE() {
-  if (sseSource) sseSource.close();
-  sseSource = new EventSource(`/api/events/stream?token=${TOKEN}`);
-  sseSource.onmessage = (e) => {
-    try {
-      const data = JSON.parse(e.data);
-      if (data.type === 'status') {
-        allApps = data.apps || allApps;
-        updateGlobalHealth(data.apps);
-        renderAppNav(data.apps);
-        renderStats(data.stats, data.apps);
-        if (currentPage === 'overview') renderAppGrid(data.apps);
-      }
-      if (data.type === 'job_done') {
-        if (currentPage === 'jobs') loadJobs();
-        if (currentPage.startsWith('app-')) loadAppDetail(currentPage.replace('app-',''));
-      }
-    } catch {}
-  };
-  sseSource.onerror = () => { sseSource.close(); setTimeout(startSSE, 12000); };
-}
-
-document.querySelectorAll('.modal-bg').forEach(bg => {
-  bg.addEventListener('click', e => { if (e.target === bg) bg.classList.remove('open'); });
-});
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') document.querySelectorAll('.modal-bg.open').forEach(m => m.classList.remove('open'));
-});
-
-refreshAll();
-startSSE();
-setInterval(refreshAll, 60000);
+// Init
+init();
 </script>
 </body>
 </html>

@@ -1,518 +1,353 @@
-require('dotenv').config();
+require('dotenv').config({ path: process.env.CONFIG_FILE || '.env' });
 const express = require('express');
+const session = require('express-session');
+const bcrypt = require('bcryptjs');
+const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const { spawn } = require('child_process');
+const http = require('http');
+const { WebSocketServer } = require('ws');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const cron = require('node-cron');
+
 const db = require('./db');
-const ssh = require('./ssh');
-const github = require('./github');
+const { fetchAppStatus, runSSH, streamSSH } = require('./ssh');
+const { getBranchInfo, getAllBranches, getRecentCommits } = require('./github');
+
+const PORT = process.env.DASHBOARD_PORT || 9000;
+const SESSION_SECRET = process.env.SESSION_SECRET || 'tap-devops-' + Math.random().toString(36).slice(2);
+const KEYS_DIR = path.join(__dirname, 'data', 'keys');
+fs.mkdirSync(KEYS_DIR, { recursive: true });
 
 const app = express();
-const PORT = process.env.PORT || 4000;
-const AUTH_TOKEN = process.env.AUTH_TOKEN;
-const SCRIPTS_DIR = process.env.SCRIPTS_DIR || path.join(__dirname, 'scripts');
+const server = http.createServer(app);
 
-app.use(express.json({ limit: '10mb' }));
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-fs.mkdirSync(SCRIPTS_DIR, { recursive: true });
-fs.mkdirSync(path.join(__dirname, 'logs'), { recursive: true });
-fs.mkdirSync(path.join(__dirname, 'keys'), { recursive: true });
+app.use(session({
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: { secure: false, httpOnly: true, maxAge: 8 * 60 * 60 * 1000 },
+}));
 
-function auth(req, res, next) {
-  if (!AUTH_TOKEN) return next();
-  const h = req.headers.authorization;
-  if (h && h === `Bearer ${AUTH_TOKEN}`) return next();
-  if (req.query.token && req.query.token === AUTH_TOKEN) return next();
+const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 300 });
+const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, message: { error: 'Too many attempts' } });
+app.use('/api', limiter);
+
+const wss = new WebSocketServer({ server });
+const wsClients = new Map();
+
+wss.on('connection', (ws) => {
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+  ws.on('message', (msg) => {
+    try {
+      const { type, sessionId } = JSON.parse(msg);
+      if (type === 'auth' && sessionId) wsClients.set(sessionId, ws);
+    } catch {}
+  });
+  ws.on('close', () => {
+    for (const [sid, client] of wsClients) {
+      if (client === ws) wsClients.delete(sid);
+    }
+  });
+});
+
+setInterval(() => {
+  wss.clients.forEach(ws => {
+    if (!ws.isAlive) return ws.terminate();
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 30000);
+
+function broadcast(data) {
+  const msg = JSON.stringify(data);
+  wss.clients.forEach(ws => {
+    if (ws.readyState === 1) ws.send(msg);
+  });
+}
+
+function requireAuth(req, res, next) {
+  if (req.session?.user) return next();
   res.status(401).json({ error: 'Unauthorized' });
 }
 
-const statusCache = {};
-const CACHE_TTL = 30000;
-const activeJobs = new Map();
-const sseClients = new Set();
+app.post('/api/auth/setup', authLimiter, async (req, res) => {
+  if (db.userCount() > 0) return res.status(403).json({ error: 'Already set up' });
+  const { username, password } = req.body;
+  if (!username || !password || password.length < 8)
+    return res.status(400).json({ error: 'Username required, password min 8 chars' });
+  const hash = await bcrypt.hash(password, 12);
+  db.createUser(username, hash);
+  req.session.user = { username };
+  res.json({ ok: true });
+});
 
-function broadcastSSE(data) {
-  const msg = `data: ${JSON.stringify(data)}\n\n`;
-  sseClients.forEach(res => { try { res.write(msg); } catch {} });
-}
+app.post('/api/auth/login', authLimiter, async (req, res) => {
+  const { username, password } = req.body;
+  const user = db.getUser(username);
+  if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+  const match = await bcrypt.compare(password, user.password_hash);
+  if (!match) return res.status(401).json({ error: 'Invalid credentials' });
+  req.session.user = { username };
+  res.json({ ok: true, username });
+});
 
-async function refreshStatus(appId) {
-  const appData = db.getApp(appId);
-  if (!appData) return null;
-  const [health, metrics, version, commit] = await Promise.allSettled([
-    ssh.checkHealth(appId),
-    ssh.getMetrics(appId),
-    ssh.getVersion(appId),
-    github.getLatestCommit(appId),
-  ]);
-  const lastDeploy = db.getDeploymentsByApp(appId, 1)[0] || null;
-  const activeJob = activeJobs.get(appId) || null;
-  const result = {
-    app: appId,
-    id: appId,
-    name: appData.name,
-    type: appData.type,
-    tags: appData.tags || [],
-    config: appData.config,
-    healthy: health.status === 'fulfilled' ? health.value.healthy : false,
-    httpCode: health.status === 'fulfilled' ? health.value.code : 0,
-    metrics: metrics.status === 'fulfilled' ? metrics.value : {},
-    version: version.status === 'fulfilled' ? version.value : 'unknown',
-    commit: commit.status === 'fulfilled' ? commit.value : null,
-    lastDeploy,
-    activeJob,
-    cachedAt: Date.now(),
-  };
-  statusCache[appId] = result;
-  return result;
-}
+app.post('/api/auth/logout', (req, res) => {
+  req.session.destroy(() => res.json({ ok: true }));
+});
 
-async function getStatus(appId) {
-  const cached = statusCache[appId];
-  if (cached && Date.now() - cached.cachedAt < CACHE_TTL) return cached;
-  return refreshStatus(appId);
-}
-
-function buildJobEnv(appId) {
-  const appData = db.getApp(appId);
-  const creds = db.getCredentialMap(appId);
-  const cfg = appData?.config || {};
-  return {
-    ...process.env,
-    ...creds,
-    APP_ID: appId,
-    APP_HOST: cfg.host || '',
-    APP_SSH_USER: cfg.ssh_user || '',
-    APP_PEM: cfg.ssh_key_path || process.env.DASHBOARD_PEM || '',
-    APP_BRANCH: cfg.branch || 'main',
-    APP_REPO: cfg.repo || '',
-    APP_DIR: cfg.app_dir || '',
-    BENCH_DIR: cfg.bench_dir || '',
-    DOCKER_DIR: cfg.docker_compose_dir || '',
-  };
-}
-
-function spawnJob(appId, jobType, command, extraEnv = {}, triggeredBy = 'dashboard') {
-  const jobId = `${appId}-${jobType}-${Date.now()}`;
-  const logPath = path.join(__dirname, 'logs', `${jobId}.log`);
-  const logStream = fs.createWriteStream(logPath, { flags: 'a' });
-  const env = { ...buildJobEnv(appId), ...extraEnv };
-  const proc = spawn('bash', ['-c', command], { env, stdio: ['ignore', 'pipe', 'pipe'] });
-  const startedAt = Date.now();
-  const rec = db.startJobRun(appId, jobType, proc.pid, triggeredBy);
-  const jobInfo = { jobId, jobType, pid: proc.pid, startedAt, logPath, status: 'running', recId: rec.lastInsertRowid };
-  activeJobs.set(appId, jobInfo);
-  let buffer = '';
-  const onData = (chunk) => {
-    const text = chunk.toString();
-    buffer += text;
-    logStream.write(text);
-    broadcastSSE({ type: 'job_log', appId, jobId, chunk: text });
-  };
-  proc.stdout.on('data', onData);
-  proc.stderr.on('data', onData);
-  proc.on('close', (code) => {
-    logStream.end();
-    const duration = Date.now() - startedAt;
-    const status = code === 0 ? 'success' : 'failed';
-    db.finishJobRun(jobInfo.recId, status, buffer.slice(-80000), duration);
-    activeJobs.delete(appId);
-    if (statusCache[appId]) statusCache[appId].cachedAt = 0;
-    broadcastSSE({ type: 'job_done', appId, jobId, jobType, status, duration, exitCode: code });
+app.get('/api/auth/status', (req, res) => {
+  res.json({
+    authenticated: !!req.session?.user,
+    user: req.session?.user?.username || null,
+    needsSetup: db.userCount() === 0,
   });
-  return jobInfo;
-}
+});
 
-function buildSSHSetupCommand(appId, scriptPath) {
-  const appData = db.getApp(appId);
-  const cfg = appData.config;
-  const creds = db.getCredentialMap(appId);
-  const pem = cfg.ssh_key_path || process.env.DASHBOARD_PEM;
-  const sshUser = cfg.ssh_user;
-  const host = cfg.host;
-  const envContent = Object.entries(creds).map(([k, v]) => `${k}=${v.replace(/'/g, "'\\''")}`).join('\n');
-  const ts = Date.now();
-  const remoteScript = `/tmp/setup-${appId}-${ts}.sh`;
-  const envFile = `/tmp/secrets-${appId}-${ts}.env`;
-  const launcherPath = `/tmp/launcher-${appId}-${ts}.sh`;
-  const logPath = `/tmp/job-${appId}-${ts}.log`;
-  const rcPath = `/tmp/job-${appId}-${ts}.rc`;
+const keyUpload = multer({
+  dest: KEYS_DIR,
+  limits: { fileSize: 50 * 1024 },
+});
 
-  return `
-set -euo pipefail
-SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o BatchMode=yes"
-scp -q $SSH_OPTS -i '${pem}' '${scriptPath}' '${sshUser}@${host}:${remoteScript}'
-printf '%s\n' '${envContent}' | ssh $SSH_OPTS -i '${pem}' '${sshUser}@${host}' "cat > ${envFile} && chmod 600 ${envFile}"
-ssh $SSH_OPTS -i '${pem}' '${sshUser}@${host}' "chmod +x ${remoteScript}"
-cat <<'LAUNCHER' | ssh $SSH_OPTS -i '${pem}' '${sshUser}@${host}' "cat > ${launcherPath} && chmod +x ${launcherPath}"
-#!/bin/bash
-LOG=${logPath}
-RC=${rcPath}
-rm -f "$LOG" "$RC"
-exec >"$LOG" 2>&1
-echo "=== setup ${appId}: $(date) | $(whoami) ==="
-set -a; source ${envFile}; set +a
-bash ${remoteScript}
-echo $? > "$RC"
-LAUNCHER
-ssh $SSH_OPTS -i '${pem}' '${sshUser}@${host}' "nohup bash ${launcherPath} >/dev/null 2>&1 &"
-echo "=== launched on ${host} — polling... ==="
-waited=0; max=2400
-while [ "$waited" -lt "$max" ]; do
-  sleep 15; waited=$((waited+15))
-  ssh $SSH_OPTS -i '${pem}' '${sshUser}@${host}' "cat ${logPath} 2>/dev/null" || true
-  rc=$(ssh $SSH_OPTS -i '${pem}' '${sshUser}@${host}' "cat ${rcPath} 2>/dev/null | tr -d '[:space:]'" || echo "")
-  if [ -n "$rc" ]; then
-    if [ "$rc" = "0" ]; then echo "=== complete ==="; exit 0
-    else echo "=== FAILED (exit $rc) ==="; exit 1; fi
-  fi
-  echo "[${waited}s] running..."
-done
-echo "=== TIMED OUT ==="; exit 1
-  `;
-}
+app.get('/api/keys', requireAuth, (req, res) => {
+  res.json(db.getKeys());
+});
 
-function buildSSHRefreshCommand(appId, scriptPath) {
-  const appData = db.getApp(appId);
-  const cfg = appData.config;
-  const creds = db.getCredentialMap(appId);
-  const pem = cfg.ssh_key_path || process.env.DASHBOARD_PEM;
-  const sshUser = cfg.ssh_user;
-  const host = cfg.host;
-  const envContent = Object.entries(creds).map(([k, v]) => `${k}=${v.replace(/'/g, "'\\''")}`).join('\n');
-  const ts = Date.now();
-  const remoteScript = `/tmp/refresh-${appId}-${ts}.sh`;
-  const envFile = `/tmp/secrets-${appId}-${ts}.env`;
-
-  return `
-set -euo pipefail
-SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o BatchMode=yes"
-scp -q $SSH_OPTS -i '${pem}' '${scriptPath}' '${sshUser}@${host}:${remoteScript}'
-printf '%s\n' '${envContent}' | ssh $SSH_OPTS -i '${pem}' '${sshUser}@${host}' "cat > ${envFile} && chmod 600 ${envFile}"
-ssh $SSH_OPTS -i '${pem}' '${sshUser}@${host}' "chmod +x ${remoteScript} && set -a && source ${envFile} && set +a && bash ${remoteScript}"
-ssh $SSH_OPTS -i '${pem}' '${sshUser}@${host}' "rm -f ${remoteScript} ${envFile}" || true
-  `;
-}
-
-app.get('/api/status', auth, async (req, res) => {
-  try {
-    const apps = db.getApps().filter(a => a.enabled);
-    const results = await Promise.all(apps.map(a => getStatus(a.id)));
-    const stats = db.getStats();
-    stats.activeJobs = activeJobs.size;
-    res.json({ apps: results.filter(Boolean), stats, timestamp: Date.now() });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+app.post('/api/keys/upload', requireAuth, keyUpload.single('keyfile'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const name = (req.body.name || req.file.originalname).replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.(pem|key)$/i, '');
+  const finalPath = path.join(KEYS_DIR, name + '.pem');
+  fs.renameSync(req.file.path, finalPath);
+  fs.chmodSync(finalPath, 0o600);
+  const firstLine = fs.readFileSync(finalPath, 'utf8').split('\n')[0];
+  if (!firstLine.includes('PRIVATE KEY') && !firstLine.includes('BEGIN RSA') && !firstLine.includes('BEGIN OPENSSH')) {
+    fs.unlinkSync(finalPath);
+    return res.status(400).json({ error: 'File does not appear to be a valid private key' });
   }
+  db.saveKey(name, finalPath, null);
+  res.json({ ok: true, name, path: finalPath });
 });
 
-app.get('/api/status/:appId', auth, async (req, res) => {
-  if (!db.getApp(req.params.appId)) return res.status(404).json({ error: 'Unknown app' });
-  try { res.json(await refreshStatus(req.params.appId)); }
-  catch (e) { res.status(500).json({ error: e.message }); }
+app.delete('/api/keys/:id', requireAuth, (req, res) => {
+  const key = db.getKey(req.params.id);
+  if (!key) return res.status(404).json({ error: 'Not found' });
+  try { fs.unlinkSync(key.file_path); } catch {}
+  db.deleteKey(req.params.id);
+  res.json({ ok: true });
 });
 
-app.get('/api/apps', auth, (req, res) => res.json(db.getApps()));
-
-app.post('/api/apps', auth, (req, res) => {
-  const { id, name, type, config, tags } = req.body;
-  if (!id || !name || !type) return res.status(400).json({ error: 'id, name, type required' });
-  if (!/^[a-z0-9_-]+$/.test(id)) return res.status(400).json({ error: 'id: lowercase alphanumeric/dash/underscore only' });
-  db.upsertApp(id, name, type || 'generic', config || {}, tags || []);
-  delete statusCache[id];
-  res.json({ ok: true, app: db.getApp(id) });
+app.get('/api/apps', requireAuth, (req, res) => {
+  const apps = db.getApps();
+  res.json(apps.map(a => ({
+    ...a,
+    env_json: JSON.parse(a.env_json || '{}'),
+    flags_json: JSON.parse(a.flags_json || '{}'),
+    status: db.getStatus(a.app_id),
+  })));
 });
 
-app.put('/api/apps/:appId', auth, (req, res) => {
-  const { appId } = req.params;
-  const existing = db.getApp(appId);
+app.get('/api/apps/:id', requireAuth, (req, res) => {
+  const a = db.getApp(req.params.id);
+  if (!a) return res.status(404).json({ error: 'Not found' });
+  res.json({
+    ...a,
+    env_json: JSON.parse(a.env_json || '{}'),
+    flags_json: JSON.parse(a.flags_json || '{}'),
+  });
+});
+
+app.post('/api/apps/:id/config', requireAuth, (req, res) => {
+  const { app_name, setup_script, server_user, server_host, ssh_port, ssh_key_path, env, flags } = req.body;
+  const existing = db.getApp(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
-  const { name, type, config, tags } = req.body;
-  db.upsertApp(appId, name || existing.name, type || existing.type, config || existing.config, tags || existing.tags);
-  delete statusCache[appId];
-  res.json({ ok: true, app: db.getApp(appId) });
-});
-
-app.delete('/api/apps/:appId', auth, (req, res) => {
-  if (!db.getApp(req.params.appId)) return res.status(404).json({ error: 'Not found' });
-  db.deleteApp(req.params.appId);
-  delete statusCache[req.params.appId];
+  db.upsertApp({
+    app_id: req.params.id,
+    app_name: app_name || existing.app_name,
+    setup_script: setup_script !== undefined ? setup_script : existing.setup_script,
+    server_user: server_user || existing.server_user || 'azureuser',
+    server_host: server_host !== undefined ? server_host : existing.server_host,
+    ssh_port: parseInt(ssh_port) || existing.ssh_port || 22,
+    ssh_key_path: ssh_key_path !== undefined ? ssh_key_path : existing.ssh_key_path,
+    env_json: env ? JSON.stringify(env) : existing.env_json,
+    flags_json: flags ? JSON.stringify(flags) : existing.flags_json || '{}',
+  });
   res.json({ ok: true });
 });
 
-app.patch('/api/apps/:appId/toggle', auth, (req, res) => {
-  const appData = db.getApp(req.params.appId);
-  if (!appData) return res.status(404).json({ error: 'Not found' });
-  db.toggleApp(req.params.appId, !appData.enabled);
-  res.json({ ok: true });
-});
-
-app.post('/api/apps/:appId/test-connection', auth, async (req, res) => {
-  const appData = db.getApp(req.params.appId);
-  if (!appData) return res.status(404).json({ error: 'Not found' });
-  const cfg = appData.config;
-  const result = await ssh.testConnection(cfg.host, cfg.ssh_user, cfg.ssh_key_path || process.env.DASHBOARD_PEM);
-  res.json(result);
-});
-
-app.get('/api/apps/:appId/credentials', auth, (req, res) => {
-  if (!db.getApp(req.params.appId)) return res.status(404).json({ error: 'Not found' });
-  const creds = db.getCredentials(req.params.appId);
-  res.json(creds.map(c => ({ ...c, value: c.is_secret ? '***' : c.value })));
-});
-
-app.post('/api/apps/:appId/credentials', auth, (req, res) => {
-  const { appId } = req.params;
-  if (!db.getApp(appId)) return res.status(404).json({ error: 'Not found' });
-  const { key_name, value, is_secret } = req.body;
-  if (!key_name || value === undefined) return res.status(400).json({ error: 'key_name and value required' });
-  db.setCredential(appId, key_name, value, is_secret ? 1 : 0);
-  res.json({ ok: true });
-});
-
-app.delete('/api/apps/:appId/credentials/:key', auth, (req, res) => {
-  db.deleteCredential(req.params.appId, req.params.key);
-  res.json({ ok: true });
-});
-
-app.post('/api/apps/:appId/setup', auth, (req, res) => {
-  const { appId } = req.params;
-  const appData = db.getApp(appId);
-  if (!appData) return res.status(404).json({ error: 'Not found' });
-  if (activeJobs.has(appId)) return res.status(409).json({ error: 'Job already running', job: activeJobs.get(appId) });
-  const cfg = appData.config;
-  if (!cfg.host || !cfg.ssh_user) return res.status(400).json({ error: 'host and ssh_user required in config' });
-  const scriptName = cfg.setup_script || `setup-${appId}.sh`;
-  const scriptPath = resolveScript(scriptName);
-  if (!scriptPath) return res.status(404).json({ error: `Setup script not found: ${scriptName}` });
-  const command = buildSSHSetupCommand(appId, scriptPath);
-  const job = spawnJob(appId, 'setup', command, {}, req.body.triggeredBy || 'dashboard');
-  db.recordDeployment({ app: appId, commit: 'setup', branch: cfg.branch || 'n/a', status: 'running', triggered_by: 'dashboard', message: 'Full setup triggered' });
-  res.json({ ok: true, jobId: job.jobId, pid: job.pid });
-});
-
-app.post('/api/apps/:appId/refresh', auth, (req, res) => {
-  const { appId } = req.params;
-  const appData = db.getApp(appId);
-  if (!appData) return res.status(404).json({ error: 'Not found' });
-  if (activeJobs.has(appId)) return res.status(409).json({ error: 'Job already running', job: activeJobs.get(appId) });
-  const cfg = appData.config;
-  if (!cfg.host || !cfg.ssh_user) return res.status(400).json({ error: 'host and ssh_user required in config' });
-  const scriptName = cfg.refresh_script || `refresh-${appId}.sh`;
-  const scriptPath = resolveScript(scriptName);
-  if (!scriptPath) return res.status(404).json({ error: `Refresh script not found: ${scriptName}` });
-  const command = buildSSHRefreshCommand(appId, scriptPath);
-  const job = spawnJob(appId, 'refresh', command, {}, req.body.triggeredBy || 'dashboard');
-  res.json({ ok: true, jobId: job.jobId, pid: job.pid });
-});
-
-app.post('/api/apps/:appId/run-script', auth, (req, res) => {
-  const { appId } = req.params;
-  const appData = db.getApp(appId);
-  if (!appData) return res.status(404).json({ error: 'Not found' });
-  if (activeJobs.has(appId)) return res.status(409).json({ error: 'Job already running' });
-  const { script_name, job_type } = req.body;
-  const scriptPath = resolveScript(script_name);
-  if (!scriptPath) return res.status(404).json({ error: `Script not found: ${script_name}` });
-  const cfg = appData.config;
-  const command = buildSSHRefreshCommand(appId, scriptPath);
-  const job = spawnJob(appId, job_type || 'custom', command);
-  res.json({ ok: true, jobId: job.jobId, pid: job.pid });
-});
-
-function resolveScript(name) {
-  const fsPath = path.join(SCRIPTS_DIR, path.basename(name));
-  if (fs.existsSync(fsPath)) return fsPath;
-  const dbScript = db.getScript(name);
-  if (dbScript) {
-    const tmpPath = path.join(SCRIPTS_DIR, `.tmp-${path.basename(name)}`);
-    fs.writeFileSync(tmpPath, dbScript.content, 'utf8');
-    fs.chmodSync(tmpPath, '755');
-    return tmpPath;
+app.get('/api/apps/:id/status', requireAuth, async (req, res) => {
+  const a = db.getApp(req.params.id);
+  if (!a) return res.status(404).json({ error: 'Not found' });
+  if (!a.server_host || !a.ssh_key_path)
+    return res.json({ ok: false, overall: 'not_configured', error: 'Server not configured' });
+  try {
+    const status = await fetchAppStatus(a);
+    db.setStatus(req.params.id, status);
+    broadcast({ type: 'status_update', app_id: req.params.id, status });
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
   }
-  return null;
+});
+
+app.get('/api/apps/:id/logs', requireAuth, async (req, res) => {
+  const a = db.getApp(req.params.id);
+  if (!a) return res.status(404).json({ error: 'Not found' });
+  if (!a.server_host || !a.ssh_key_path) return res.json({ logs: [] });
+  const service = req.query.service || `${a.app_id}_app`;
+  const lines = parseInt(req.query.lines) || 100;
+  try {
+    const { stdout } = await runSSH(
+      { host: a.server_host, port: a.ssh_port || 22, username: a.server_user || 'azureuser', privateKeyPath: a.ssh_key_path },
+      `journalctl --user -u ${service}.service -n ${lines} --no-pager --output=short-iso 2>/dev/null || echo "(no logs)"`
+    );
+    res.json({ service, logs: stdout.split('\n').filter(Boolean) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/apps/:id/github', requireAuth, async (req, res) => {
+  const a = db.getApp(req.params.id);
+  if (!a) return res.status(404).json({ error: 'Not found' });
+  const env = JSON.parse(a.env_json || '{}');
+  const prefix = a.app_id.toUpperCase();
+  const repoUrl = env[`${prefix}_GIT_REPO`] || '';
+  const branch = env[`${prefix}_GIT_BRANCH`] || 'main';
+  const token = process.env.GITHUB_TOKEN || null;
+  if (!repoUrl) return res.json({ error: 'No repo configured', branch_info: null, branches: [], commits: [] });
+  const [branch_info, branches, commits] = await Promise.all([
+    getBranchInfo(repoUrl, branch, token),
+    getAllBranches(repoUrl, token),
+    getRecentCommits(repoUrl, branch, token, 5),
+  ]);
+  res.json({ branch_info, branches, commits, repo_url: repoUrl, branch });
+});
+
+function buildFlagString(flagsObj) {
+  if (!flagsObj || typeof flagsObj !== 'object') return '';
+  return Object.entries(flagsObj)
+    .filter(([, val]) => val === true || (typeof val === 'string' && val.trim() !== '' && val !== 'false'))
+    .map(([flag, val]) => val === true ? flag : `${flag} ${val}`)
+    .join(' ');
 }
 
-app.post('/api/apps/:appId/deploy', auth, async (req, res) => {
-  const { appId } = req.params;
-  const appData = db.getApp(appId);
-  if (!appData) return res.status(404).json({ error: 'Not found' });
-  const cfg = appData.config;
-  if (!cfg.repo) return res.status(400).json({ error: 'No GitHub repo configured' });
-  const startedAt = Date.now();
-  const rec = db.recordDeployment({ app: appId, commit: 'manual', branch: cfg.branch || 'main', status: 'pending', triggered_by: 'dashboard' });
+app.post('/api/apps/:id/deploy', requireAuth, async (req, res) => {
+  const a = db.getApp(req.params.id);
+  if (!a) return res.status(404).json({ error: 'Not found' });
+  if (!a.server_host || !a.ssh_key_path)
+    return res.status(400).json({ error: 'Server not configured' });
+
+  const trigger = req.body.trigger || 'manual';
+  const deployId = db.startDeployment(a.app_id, trigger);
+  res.json({ ok: true, deploy_id: deployId });
+
+  let log = '';
+  broadcast({ type: 'deploy_start', app_id: a.app_id, deploy_id: deployId });
+
   try {
-    const result = await github.triggerDeploy(appId);
-    db.updateDeployment(rec.lastInsertRowid, 'triggered', Date.now() - startedAt, 'Workflow dispatched');
-    if (statusCache[appId]) statusCache[appId].cachedAt = 0;
-    res.json({ ok: true, ...result });
-  } catch (e) {
-    db.updateDeployment(rec.lastInsertRowid, 'failed', Date.now() - startedAt, e.message);
-    res.status(500).json({ error: e.message });
+    const env = JSON.parse(a.env_json || '{}');
+    const savedFlags = JSON.parse(a.flags_json || '{}');
+    const requestFlags = req.body.flags || {};
+    const mergedFlags = { ...savedFlags, ...requestFlags };
+    const builtFlagStr = buildFlagString(mergedFlags);
+    const extraFlagStr = Array.isArray(req.body.extra_flags) ? req.body.extra_flags.join(' ') : (req.body.extra_flags || '');
+    const fullFlagStr = [builtFlagStr, extraFlagStr].filter(Boolean).join(' ');
+
+    const envLines = Object.entries(env)
+      .map(([k, v]) => `export ${k}="${String(v).replace(/"/g, '\\"')}"`)
+      .join('\n');
+
+    const setupScript = a.setup_script || `~/tap-devops/setup/setup-${a.app_id}.sh`;
+
+    const remoteCmd = `
+${envLines}
+SCRIPT="${setupScript}"
+if [[ ! -f "$SCRIPT" ]]; then
+  SCRIPT="\${HOME}/tap-devops/setup/setup-${a.app_id}.sh"
+fi
+if [[ ! -f "$SCRIPT" ]]; then
+  echo "ERROR: Setup script not found: $SCRIPT"
+  exit 1
+fi
+bash "$SCRIPT" ${fullFlagStr}
+`;
+
+    const { code } = await streamSSH(
+      { host: a.server_host, port: a.ssh_port || 22, username: a.server_user || 'azureuser', privateKeyPath: a.ssh_key_path },
+      `bash -s`,
+      (chunk) => {
+        log += chunk;
+        if (log.length > 100000) log = log.slice(-100000);
+        db.updateDeploymentLog(deployId, log);
+        broadcast({ type: 'deploy_log', app_id: a.app_id, deploy_id: deployId, chunk });
+      }
+    );
+
+    const status = code === 0 ? 'success' : 'failed';
+    db.finishDeployment(deployId, status, code);
+    broadcast({ type: 'deploy_finish', app_id: a.app_id, deploy_id: deployId, status, code });
+  } catch (err) {
+    log += `\nERROR: ${err.message}`;
+    db.updateDeploymentLog(deployId, log);
+    db.finishDeployment(deployId, 'failed', -1);
+    broadcast({ type: 'deploy_finish', app_id: a.app_id, deploy_id: deployId, status: 'failed', error: err.message });
   }
 });
 
-app.get('/api/apps/:appId/logs', auth, async (req, res) => {
-  const { appId } = req.params;
-  if (!db.getApp(appId)) return res.status(404).json({ error: 'Not found' });
-  const lines = Math.min(parseInt(req.query.lines || '200', 10), 2000);
+app.get('/api/apps/:id/deployments', requireAuth, (req, res) => {
+  res.json(db.getDeployments(req.params.id, parseInt(req.query.limit) || 20));
+});
+
+app.get('/api/deployments/:id', requireAuth, (req, res) => {
+  const d = db.getDeployment(req.params.id);
+  if (!d) return res.status(404).json({ error: 'Not found' });
+  res.json(d);
+});
+
+app.get('/api/deployments', requireAuth, (req, res) => {
+  res.json(db.getRecentDeployments(20));
+});
+
+app.post('/api/apps/:id/ssh-test', requireAuth, async (req, res) => {
+  const a = db.getApp(req.params.id);
+  if (!a) return res.status(404).json({ error: 'Not found' });
+  if (!a.server_host || !a.ssh_key_path) return res.status(400).json({ error: 'Not configured' });
   try {
-    const content = await ssh.getLogs(appId, lines);
-    db.saveLogSnapshot(appId, 'web', content);
-    res.json({ app: appId, content, timestamp: Date.now() });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+    const { stdout } = await runSSH(
+      { host: a.server_host, port: a.ssh_port || 22, username: a.server_user || 'azureuser', privateKeyPath: a.ssh_key_path },
+      'echo "SSH_OK" && uname -a && uptime'
+    );
+    res.json({ ok: true, output: stdout.trim() });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-app.get('/api/apps/:appId/github/runs', auth, async (req, res) => {
-  if (!db.getApp(req.params.appId)) return res.status(404).json({ error: 'Not found' });
-  try { res.json(await github.getWorkflowRuns(req.params.appId)); }
-  catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/api/apps/:appId/github/branches', auth, async (req, res) => {
-  if (!db.getApp(req.params.appId)) return res.status(404).json({ error: 'Not found' });
-  try { res.json(await github.listBranches(req.params.appId)); }
-  catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/api/deployments', auth, (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
-  const appId = req.query.app;
-  res.json(appId ? db.getDeploymentsByApp(appId, limit) : db.getDeployments(limit));
-});
-
-app.get('/api/jobs', auth, (req, res) => {
-  const active = Object.fromEntries(activeJobs);
-  res.json({ active, recent: db.getAllJobRuns(100) });
-});
-
-app.post('/api/apps/:appId/kill', auth, (req, res) => {
-  const job = activeJobs.get(req.params.appId);
-  if (!job) return res.status(404).json({ error: 'No active job' });
-  try { process.kill(job.pid, 'SIGTERM'); } catch {}
-  res.json({ ok: true });
-});
-
-app.get('/api/metrics', auth, async (req, res) => {
-  try {
-    const apps = db.getApps().filter(a => a.enabled);
-    const results = await Promise.all(apps.map(async (a) => ({
-      app: a.id, name: a.name, type: a.type, ...(await ssh.getMetrics(a.id))
-    })));
-    res.json(results);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+async function pollAllStatus() {
+  const apps = db.getApps();
+  for (const a of apps) {
+    if (!a.server_host || !a.ssh_key_path) continue;
+    try {
+      const status = await fetchAppStatus(a);
+      db.setStatus(a.app_id, status);
+      broadcast({ type: 'status_update', app_id: a.app_id, status });
+    } catch {}
+    await new Promise(r => setTimeout(r, 2000));
   }
+}
+
+const pollInterval = parseInt(process.env.STATUS_POLL_INTERVAL_SECONDS || '60');
+cron.schedule(`*/${pollInterval} * * * * *`, () => { pollAllStatus().catch(() => {}); });
+
+server.listen(PORT, () => {
+  console.log(`\n  TAP DevOps Dashboard`);
+  console.log(`  Running on http://localhost:${PORT}`);
+  console.log(`  ${db.userCount() === 0 ? '⚠  No users — visit /setup to create admin' : '✓ Auth configured'}\n`);
 });
-
-app.get('/api/metrics/:appId', auth, async (req, res) => {
-  if (!db.getApp(req.params.appId)) return res.status(404).json({ error: 'Not found' });
-  try { res.json(await ssh.getMetrics(req.params.appId)); }
-  catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/api/ssh-keys', auth, (req, res) => res.json(db.getSSHKeys()));
-
-app.post('/api/ssh-keys', auth, (req, res) => {
-  const { name, path: keyPath } = req.body;
-  if (!name || !keyPath) return res.status(400).json({ error: 'name and path required' });
-  if (!fs.existsSync(keyPath)) return res.status(400).json({ error: `File not found: ${keyPath}` });
-  db.upsertSSHKey(name, keyPath, '');
-  res.json({ ok: true, keys: db.getSSHKeys() });
-});
-
-app.delete('/api/ssh-keys/:id', auth, (req, res) => {
-  db.deleteSSHKey(req.params.id);
-  res.json({ ok: true });
-});
-
-app.get('/api/scripts', auth, (req, res) => {
-  const fsScripts = [];
-  try {
-    fs.readdirSync(SCRIPTS_DIR).filter(f => f.endsWith('.sh') && !f.startsWith('.tmp-')).forEach(f => fsScripts.push(f));
-  } catch {}
-  const dbScripts = db.getScripts().map(s => s.name);
-  const all = [...new Set([...fsScripts, ...dbScripts])].sort();
-  res.json(all);
-});
-
-app.get('/api/scripts/:name', auth, (req, res) => {
-  const name = path.basename(req.params.name);
-  const fsPath = path.join(SCRIPTS_DIR, name);
-  if (fs.existsSync(fsPath)) {
-    return res.json({ name, content: fs.readFileSync(fsPath, 'utf8'), source: 'filesystem' });
-  }
-  const dbScript = db.getScript(name);
-  if (dbScript) return res.json({ name, content: dbScript.content, source: 'database' });
-  res.status(404).json({ error: 'Not found' });
-});
-
-app.put('/api/scripts/:name', auth, (req, res) => {
-  const { content, save_to } = req.body;
-  if (!content) return res.status(400).json({ error: 'content required' });
-  const name = path.basename(req.params.name);
-  const target = save_to || 'filesystem';
-  if (target === 'database') {
-    db.upsertScript(name, content, req.body.script_type || 'custom', req.body.app_id || null);
-  } else {
-    const scriptPath = path.join(SCRIPTS_DIR, name);
-    fs.writeFileSync(scriptPath, content, 'utf8');
-    fs.chmodSync(scriptPath, '755');
-  }
-  res.json({ ok: true });
-});
-
-app.post('/api/scripts', auth, (req, res) => {
-  const { name, content, script_type, app_id } = req.body;
-  if (!name || !content) return res.status(400).json({ error: 'name and content required' });
-  const safeName = path.basename(name).replace(/[^a-zA-Z0-9._-]/g, '-');
-  const scriptPath = path.join(SCRIPTS_DIR, safeName);
-  fs.writeFileSync(scriptPath, content, 'utf8');
-  fs.chmodSync(scriptPath, '755');
-  if (script_type || app_id) db.upsertScript(safeName, content, script_type || 'custom', app_id || null);
-  res.json({ ok: true, name: safeName });
-});
-
-app.delete('/api/scripts/:name', auth, (req, res) => {
-  const name = path.basename(req.params.name);
-  const fsPath = path.join(SCRIPTS_DIR, name);
-  if (fs.existsSync(fsPath)) fs.unlinkSync(fsPath);
-  db.deleteScript(name);
-  res.json({ ok: true });
-});
-
-app.post('/api/webhook/deploy', (req, res) => {
-  const { app: appId, status, message, commit } = req.body;
-  if (!appId || !status) return res.status(400).json({ error: 'Missing app or status' });
-  db.recordDeployment({ app: appId, commit, branch: 'auto', status, message, triggered_by: 'github' });
-  if (statusCache[appId]) statusCache[appId].cachedAt = 0;
-  broadcastSSE({ type: 'deploy_update', appId, status, message });
-  res.json({ ok: true });
-});
-
-app.get('/api/events/stream', auth, (req, res) => {
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders();
-  sseClients.add(res);
-  const heartbeat = setInterval(() => { try { res.write(': ping\n\n'); } catch {} }, 20000);
-  req.on('close', () => { sseClients.delete(res); clearInterval(heartbeat); });
-});
-
-app.get('/api/health', (req, res) => res.json({ ok: true, uptime: process.uptime(), activeJobs: activeJobs.size }));
-
-setInterval(async () => {
-  try {
-    const apps = db.getApps().filter(a => a.enabled);
-    const results = await Promise.all(apps.map(a => getStatus(a.id)));
-    const stats = db.getStats();
-    stats.activeJobs = activeJobs.size;
-    broadcastSSE({ type: 'status', apps: results.filter(Boolean), stats, timestamp: Date.now() });
-  } catch {}
-}, 30000);
-
-app.listen(PORT, () => console.log(`TAP Dashboard on :${PORT}`));

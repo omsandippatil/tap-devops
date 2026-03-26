@@ -1,206 +1,209 @@
 const Database = require('better-sqlite3');
 const path = require('path');
+const fs = require('fs');
 
-const dbPath = process.env.DB_PATH || path.join(__dirname, 'deploy.db');
-const db = new Database(dbPath);
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'dashboard.db');
+fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
-db.exec(`CREATE TABLE IF NOT EXISTS apps (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  type TEXT NOT NULL,
-  enabled INTEGER DEFAULT 1,
-  config TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
-)`);
+const db = new Database(DB_PATH);
+db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
 
-db.exec(`CREATE TABLE IF NOT EXISTS credentials (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  app_id TEXT NOT NULL,
-  key_name TEXT NOT NULL,
-  value TEXT NOT NULL,
-  is_secret INTEGER DEFAULT 0,
-  updated_at INTEGER NOT NULL,
-  UNIQUE(app_id, key_name)
-)`);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 
-db.exec(`CREATE TABLE IF NOT EXISTS deployments (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  app TEXT NOT NULL,
-  timestamp INTEGER NOT NULL,
-  commit_hash TEXT,
-  branch TEXT,
-  status TEXT NOT NULL,
-  duration INTEGER,
-  triggered_by TEXT,
-  message TEXT,
-  log TEXT
-)`);
+  CREATE TABLE IF NOT EXISTS app_configs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_id TEXT UNIQUE NOT NULL,
+    app_name TEXT NOT NULL,
+    setup_script TEXT NOT NULL DEFAULT '',
+    server_user TEXT NOT NULL DEFAULT 'azureuser',
+    server_host TEXT NOT NULL DEFAULT '',
+    ssh_port INTEGER NOT NULL DEFAULT 22,
+    ssh_key_path TEXT NOT NULL DEFAULT '',
+    env_json TEXT NOT NULL DEFAULT '{}',
+    flags_json TEXT NOT NULL DEFAULT '{}',
+    last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 
-db.exec(`CREATE TABLE IF NOT EXISTS job_runs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  app TEXT NOT NULL,
-  job_type TEXT NOT NULL,
-  timestamp INTEGER NOT NULL,
-  status TEXT NOT NULL,
-  log TEXT,
-  pid INTEGER,
-  duration INTEGER
-)`);
+  CREATE TABLE IF NOT EXISTS deployments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_id TEXT NOT NULL,
+    trigger TEXT NOT NULL DEFAULT 'manual',
+    status TEXT NOT NULL DEFAULT 'pending',
+    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    finished_at DATETIME,
+    log TEXT NOT NULL DEFAULT '',
+    exit_code INTEGER
+  );
 
-db.exec(`CREATE TABLE IF NOT EXISTS log_snapshots (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  app TEXT NOT NULL,
-  timestamp INTEGER NOT NULL,
-  log_type TEXT,
-  content TEXT
-)`);
+  CREATE TABLE IF NOT EXISTS ssh_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,
+    file_path TEXT NOT NULL,
+    fingerprint TEXT,
+    uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 
-db.exec(`CREATE TABLE IF NOT EXISTS ssh_keys (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL UNIQUE,
-  path TEXT NOT NULL,
-  fingerprint TEXT,
-  created_at INTEGER NOT NULL
-)`);
+  CREATE TABLE IF NOT EXISTS app_status_cache (
+    app_id TEXT PRIMARY KEY,
+    status_json TEXT NOT NULL DEFAULT '{}',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+`);
 
-db.exec(`CREATE TABLE IF NOT EXISTS scripts (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL UNIQUE,
-  content TEXT NOT NULL,
-  script_type TEXT DEFAULT 'custom',
-  app_id TEXT,
-  updated_at INTEGER NOT NULL
-)`);
+const seedApps = JSON.parse(process.env.SEED_APPS || 'null') || [
+  {
+    app_id: 'plg',
+    app_name: 'PLG — Plagiarism Detection',
+    setup_script: '~/tap-devops/setup/setup-plg.sh',
+    server_host: '',
+    ssh_key_path: '',
+    env_json: JSON.stringify({
+      PLG_GIT_BRANCH: 'plg_integration',
+      PLG_API_PORT: '8006',
+      PLG_FRAPPE_WEB_PORT: '8080',
+      PLG_POSTGRES_USER: 'postgres',
+      PLG_POSTGRES_PASSWORD: 'postgres',
+      PLG_POSTGRES_DB: 'plagiarism_db',
+      PLG_POSTGRES_PORT: '5432',
+      PLG_RABBITMQ_USER: 'guest',
+      PLG_RABBITMQ_PASS: 'guest',
+      PLG_FRAPPE_ADMIN_PASSWORD: 'Admin@1234',
+      PLG_FRAPPE_SITE_NAME: 'plagiarism.localhost',
+      PLG_CLIP_DEVICE: 'cpu',
+      PLG_LOG_LEVEL: 'INFO',
+      PLG_MOCK_GLIFIC: 'true',
+      PLG_SETUP_SYSTEMD: 'true',
+      PLG_ENABLE_LINGER: 'true',
+      PLG_OPEN_FIREWALL_PORT: 'true',
+      PLG_DOWNLOAD_CLIP_MODEL: 'true',
+    }),
+    flags_json: JSON.stringify({
+      '--skip-model': false,
+      '--force': true,
+      '--no-wait': false,
+      '--parallel-pull': false,
+      '--verbose': false,
+    }),
+  },
+  {
+    app_id: 'lms',
+    app_name: 'LMS — Learning Management',
+    setup_script: '~/tap-devops/setup/setup-lms.sh',
+    server_host: '',
+    ssh_key_path: '',
+    env_json: JSON.stringify({
+      LMS_GIT_BRANCH: 'main',
+      LMS_API_PORT: '8007',
+      LMS_WEB_PORT: '8081',
+      LMS_POSTGRES_USER: 'postgres',
+      LMS_POSTGRES_PASSWORD: 'postgres',
+      LMS_POSTGRES_DB: 'lms_db',
+      LMS_POSTGRES_PORT: '5433',
+      LMS_ADMIN_PASSWORD: 'Admin@1234',
+      LMS_SETUP_SYSTEMD: 'true',
+      LMS_ENABLE_LINGER: 'true',
+    }),
+    flags_json: JSON.stringify({
+      '--force': true,
+      '--no-wait': false,
+      '--verbose': false,
+    }),
+  },
+  {
+    app_id: 'rag',
+    app_name: 'RAG — Retrieval Augmented Gen',
+    setup_script: '~/tap-devops/setup/setup-rag.sh',
+    server_host: '',
+    ssh_key_path: '',
+    env_json: JSON.stringify({
+      RAG_GIT_BRANCH: 'main',
+      RAG_API_PORT: '8008',
+      RAG_WEB_PORT: '8082',
+      RAG_POSTGRES_USER: 'postgres',
+      RAG_POSTGRES_PASSWORD: 'postgres',
+      RAG_POSTGRES_DB: 'rag_db',
+      RAG_POSTGRES_PORT: '5434',
+      RAG_ADMIN_PASSWORD: 'Admin@1234',
+      RAG_SETUP_SYSTEMD: 'true',
+      RAG_ENABLE_LINGER: 'true',
+    }),
+    flags_json: JSON.stringify({
+      '--force': true,
+      '--no-wait': false,
+      '--verbose': false,
+    }),
+  },
+];
 
-try {
-  db.exec(`ALTER TABLE apps ADD COLUMN tags TEXT DEFAULT '[]'`);
-} catch {}
-try {
-  db.exec(`ALTER TABLE job_runs ADD COLUMN triggered_by TEXT DEFAULT 'dashboard'`);
-} catch {}
-
-const retentionDays = parseInt(process.env.LOG_RETENTION_DAYS || '7', 10);
-db.prepare('DELETE FROM log_snapshots WHERE timestamp < ?').run(Date.now() - retentionDays * 86400 * 1000);
+const insertApp = db.prepare(`
+  INSERT OR IGNORE INTO app_configs
+    (app_id, app_name, setup_script, server_host, ssh_key_path, env_json, flags_json)
+  VALUES
+    (@app_id, @app_name, @setup_script, @server_host, @ssh_key_path, @env_json, @flags_json)
+`);
+for (const app of seedApps) {
+  insertApp.run({
+    ...app,
+    flags_json: app.flags_json || '{}',
+  });
+}
 
 module.exports = {
-  getApps() {
-    return db.prepare('SELECT * FROM apps ORDER BY created_at ASC').all().map(r => ({
-      ...r, config: JSON.parse(r.config), tags: JSON.parse(r.tags || '[]')
-    }));
+  db,
+
+  getUser: (username) => db.prepare('SELECT * FROM users WHERE username = ?').get(username),
+  createUser: (username, hash) =>
+    db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(username, hash),
+  userCount: () => db.prepare('SELECT COUNT(*) as c FROM users').get().c,
+
+  getApps: () => db.prepare('SELECT * FROM app_configs ORDER BY app_id').all(),
+  getApp: (app_id) => db.prepare('SELECT * FROM app_configs WHERE app_id = ?').get(app_id),
+  upsertApp: (data) => db.prepare(`
+    INSERT INTO app_configs
+      (app_id, app_name, setup_script, server_user, server_host, ssh_port, ssh_key_path, env_json, flags_json, last_updated)
+    VALUES
+      (@app_id, @app_name, @setup_script, @server_user, @server_host, @ssh_port, @ssh_key_path, @env_json, @flags_json, CURRENT_TIMESTAMP)
+    ON CONFLICT(app_id) DO UPDATE SET
+      app_name=excluded.app_name,
+      setup_script=excluded.setup_script,
+      server_user=excluded.server_user,
+      server_host=excluded.server_host,
+      ssh_port=excluded.ssh_port,
+      ssh_key_path=excluded.ssh_key_path,
+      env_json=excluded.env_json,
+      flags_json=excluded.flags_json,
+      last_updated=CURRENT_TIMESTAMP
+  `).run(data),
+
+  startDeployment: (app_id, trigger = 'manual') =>
+    db.prepare('INSERT INTO deployments (app_id, trigger, status) VALUES (?, ?, ?)').run(app_id, trigger, 'running').lastInsertRowid,
+  updateDeploymentLog: (id, log) =>
+    db.prepare('UPDATE deployments SET log = ? WHERE id = ?').run(log, id),
+  finishDeployment: (id, status, exit_code) =>
+    db.prepare('UPDATE deployments SET status=?, exit_code=?, finished_at=CURRENT_TIMESTAMP WHERE id=?').run(status, exit_code, id),
+  getDeployments: (app_id, limit = 20) =>
+    db.prepare('SELECT * FROM deployments WHERE app_id = ? ORDER BY started_at DESC LIMIT ?').all(app_id, limit),
+  getDeployment: (id) => db.prepare('SELECT * FROM deployments WHERE id = ?').get(id),
+  getRecentDeployments: (limit = 10) =>
+    db.prepare('SELECT d.*, a.app_name FROM deployments d JOIN app_configs a ON d.app_id=a.app_id ORDER BY d.started_at DESC LIMIT ?').all(limit),
+
+  getKeys: () => db.prepare('SELECT * FROM ssh_keys ORDER BY uploaded_at DESC').all(),
+  saveKey: (name, file_path, fingerprint) =>
+    db.prepare('INSERT OR REPLACE INTO ssh_keys (name, file_path, fingerprint) VALUES (?, ?, ?)').run(name, file_path, fingerprint),
+  deleteKey: (id) => db.prepare('DELETE FROM ssh_keys WHERE id = ?').run(id),
+  getKey: (id) => db.prepare('SELECT * FROM ssh_keys WHERE id = ?').get(id),
+
+  setStatus: (app_id, status_json) =>
+    db.prepare('INSERT OR REPLACE INTO app_status_cache (app_id, status_json, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)').run(app_id, JSON.stringify(status_json)),
+  getStatus: (app_id) => {
+    const row = db.prepare('SELECT * FROM app_status_cache WHERE app_id = ?').get(app_id);
+    return row ? JSON.parse(row.status_json) : null;
   },
-  getApp(id) {
-    const r = db.prepare('SELECT * FROM apps WHERE id = ?').get(id);
-    return r ? { ...r, config: JSON.parse(r.config), tags: JSON.parse(r.tags || '[]') } : null;
-  },
-  upsertApp(id, name, type, config, tags = []) {
-    const now = Date.now();
-    const exists = db.prepare('SELECT id FROM apps WHERE id = ?').get(id);
-    if (exists) {
-      db.prepare('UPDATE apps SET name=?, type=?, config=?, tags=?, updated_at=? WHERE id=?')
-        .run(name, type, JSON.stringify(config), JSON.stringify(tags), now, id);
-    } else {
-      db.prepare('INSERT INTO apps (id,name,type,enabled,config,tags,created_at,updated_at) VALUES (?,?,?,1,?,?,?,?)')
-        .run(id, name, type, JSON.stringify(config), JSON.stringify(tags), now, now);
-    }
-    return db.prepare('SELECT * FROM apps WHERE id=?').get(id);
-  },
-  deleteApp(id) {
-    db.prepare('DELETE FROM apps WHERE id=?').run(id);
-    db.prepare('DELETE FROM credentials WHERE app_id=?').run(id);
-  },
-  toggleApp(id, enabled) {
-    db.prepare('UPDATE apps SET enabled=?, updated_at=? WHERE id=?').run(enabled ? 1 : 0, Date.now(), id);
-  },
-  getCredentials(appId) {
-    return db.prepare('SELECT * FROM credentials WHERE app_id=? ORDER BY key_name ASC').all(appId);
-  },
-  setCredential(appId, keyName, value, isSecret = 0) {
-    db.prepare(`INSERT INTO credentials (app_id,key_name,value,is_secret,updated_at) VALUES (?,?,?,?,?)
-      ON CONFLICT(app_id,key_name) DO UPDATE SET value=excluded.value,is_secret=excluded.is_secret,updated_at=excluded.updated_at`)
-      .run(appId, keyName, value, isSecret ? 1 : 0, Date.now());
-  },
-  deleteCredential(appId, keyName) {
-    db.prepare('DELETE FROM credentials WHERE app_id=? AND key_name=?').run(appId, keyName);
-  },
-  getCredentialMap(appId) {
-    return Object.fromEntries(
-      db.prepare('SELECT key_name, value FROM credentials WHERE app_id=?').all(appId).map(r => [r.key_name, r.value])
-    );
-  },
-  upsertSSHKey(name, filePath, fingerprint) {
-    const existing = db.prepare('SELECT id FROM ssh_keys WHERE name=?').get(name);
-    if (existing) {
-      db.prepare('UPDATE ssh_keys SET path=?, fingerprint=? WHERE name=?').run(filePath, fingerprint, name);
-    } else {
-      db.prepare('INSERT INTO ssh_keys (name,path,fingerprint,created_at) VALUES (?,?,?,?)').run(name, filePath, fingerprint, Date.now());
-    }
-  },
-  getSSHKeys() {
-    return db.prepare('SELECT * FROM ssh_keys ORDER BY created_at DESC').all();
-  },
-  deleteSSHKey(id) {
-    db.prepare('DELETE FROM ssh_keys WHERE id=?').run(id);
-  },
-  recordDeployment(data) {
-    return db.prepare(`INSERT INTO deployments (app,timestamp,commit_hash,branch,status,duration,triggered_by,message)
-      VALUES (?,?,?,?,?,?,?,?)`)
-      .run(data.app, Date.now(), data.commit, data.branch, data.status, data.duration || null, data.triggered_by || 'dashboard', data.message || '');
-  },
-  updateDeployment(id, status, duration, message, log) {
-    db.prepare('UPDATE deployments SET status=?,duration=?,message=?,log=? WHERE id=?').run(status, duration, message, log || null, id);
-  },
-  getDeployments(limit = 50) {
-    return db.prepare('SELECT * FROM deployments ORDER BY timestamp DESC LIMIT ?').all(limit);
-  },
-  getDeploymentsByApp(app, limit = 20) {
-    return db.prepare('SELECT * FROM deployments WHERE app=? ORDER BY timestamp DESC LIMIT ?').all(app, limit);
-  },
-  startJobRun(app, jobType, pid, triggeredBy = 'dashboard') {
-    return db.prepare('INSERT INTO job_runs (app,job_type,timestamp,status,pid,triggered_by) VALUES (?,?,?,?,?,?)')
-      .run(app, jobType, Date.now(), 'running', pid || null, triggeredBy);
-  },
-  finishJobRun(id, status, log, duration) {
-    db.prepare('UPDATE job_runs SET status=?,log=?,duration=? WHERE id=?').run(status, log || '', duration, id);
-  },
-  getJobRuns(app, limit = 20) {
-    return db.prepare('SELECT * FROM job_runs WHERE app=? ORDER BY timestamp DESC LIMIT ?').all(app, limit);
-  },
-  getAllJobRuns(limit = 100) {
-    return db.prepare('SELECT * FROM job_runs ORDER BY timestamp DESC LIMIT ?').all(limit);
-  },
-  saveLogSnapshot(app, logType, content) {
-    db.prepare('INSERT INTO log_snapshots (app,timestamp,log_type,content) VALUES (?,?,?,?)').run(app, Date.now(), logType, content);
-  },
-  getLogSnapshot(app, logType) {
-    return db.prepare('SELECT * FROM log_snapshots WHERE app=? AND log_type=? ORDER BY timestamp DESC LIMIT 1').get(app, logType);
-  },
-  getScripts() {
-    return db.prepare('SELECT id, name, script_type, app_id, updated_at FROM scripts ORDER BY name ASC').all();
-  },
-  getScript(name) {
-    return db.prepare('SELECT * FROM scripts WHERE name=?').get(name);
-  },
-  upsertScript(name, content, scriptType = 'custom', appId = null) {
-    const existing = db.prepare('SELECT id FROM scripts WHERE name=?').get(name);
-    if (existing) {
-      db.prepare('UPDATE scripts SET content=?, script_type=?, app_id=?, updated_at=? WHERE name=?')
-        .run(content, scriptType, appId, Date.now(), name);
-    } else {
-      db.prepare('INSERT INTO scripts (name, content, script_type, app_id, updated_at) VALUES (?,?,?,?,?)')
-        .run(name, content, scriptType, appId, Date.now());
-    }
-  },
-  deleteScript(name) {
-    db.prepare('DELETE FROM scripts WHERE name=?').run(name);
-  },
-  getStats() {
-    return {
-      totalDeployments: db.prepare('SELECT COUNT(*) as c FROM deployments').get().c,
-      successRate: db.prepare("SELECT ROUND(100.0*SUM(CASE WHEN status='success' THEN 1 ELSE 0 END)/MAX(COUNT(*),1),1) as r FROM deployments").get().r,
-      last24h: db.prepare('SELECT COUNT(*) as c FROM deployments WHERE timestamp > ?').get(Date.now() - 86400000).c,
-      totalApps: db.prepare('SELECT COUNT(*) as c FROM apps WHERE enabled=1').get().c,
-      activeJobs: 0,
-    };
-  }
 };

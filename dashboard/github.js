@@ -1,98 +1,95 @@
-const axios = require('axios');
-const db = require('./db');
+// github.js — GitHub branch / commit info fetcher
+const https = require('https');
 
-function ghClient() {
-  const token = process.env.GITHUB_TOKEN;
-  return axios.create({
-    baseURL: 'https://api.github.com',
-    headers: {
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
-    timeout: 15000,
+function githubGet(url, token) {
+  return new Promise((resolve, reject) => {
+    const opts = {
+      headers: {
+        'User-Agent': 'tap-devops-dashboard/1.0',
+        'Accept': 'application/vnd.github.v3+json',
+        ...(token ? { 'Authorization': `token ${token}` } : {}),
+      }
+    };
+    https.get(url, opts, (res) => {
+      let data = '';
+      res.on('data', d => data += d);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch (e) { reject(e); }
+      });
+    }).on('error', reject);
   });
 }
 
-function parseRepo(url) {
-  if (!url) return null;
-  const m = url.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
-  return m ? { owner: m[1], repo: m[2] } : null;
+function extractRepoPath(repoUrl) {
+  // https://github.com/owner/repo.git → owner/repo
+  const m = repoUrl.match(/github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/);
+  return m ? m[1] : null;
 }
 
-async function triggerDeploy(appId) {
-  const app = db.getApp(appId);
-  if (!app) throw new Error(`Unknown app: ${appId}`);
-  const cfg = app.config;
-  const r = parseRepo(cfg.repo);
-  if (!r) throw new Error(`No GitHub repo configured for ${appId}`);
-  const gh = ghClient();
-  const branch = cfg.branch || 'main';
-  await gh.post(`/repos/${r.owner}/${r.repo}/dispatches`, {
-    event_type: cfg.dispatch_event || 'manual-deploy',
-    client_payload: { branch, triggered_by: 'dashboard', app: appId },
-  });
-  return { dispatched: true, repo: `${r.owner}/${r.repo}`, branch };
-}
+async function getBranchInfo(repoUrl, branch, token) {
+  const repoPath = extractRepoPath(repoUrl);
+  if (!repoPath) return null;
 
-async function getLatestCommit(appId) {
-  const app = db.getApp(appId);
-  if (!app) return null;
-  const cfg = app.config;
-  const r = parseRepo(cfg.repo);
-  if (!r) return null;
   try {
-    const gh = ghClient();
-    const branch = cfg.branch || 'main';
-    const { data } = await gh.get(`/repos/${r.owner}/${r.repo}/commits/${branch}`);
+    const data = await githubGet(
+      `https://api.github.com/repos/${repoPath}/branches/${encodeURIComponent(branch)}`,
+      token
+    );
+    if (!data || !data.commit) return null;
+
     return {
-      sha: data.sha.slice(0, 7),
-      message: data.commit.message.split('\n')[0].slice(0, 80),
-      author: data.commit.author.name,
-      date: data.commit.author.date,
+      branch,
+      sha: data.commit.sha,
+      sha_short: data.commit.sha.substring(0, 7),
+      message: data.commit.commit?.message?.split('\n')[0] || '',
+      author: data.commit.commit?.author?.name || '',
+      date: data.commit.commit?.author?.date || '',
+      url: data._links?.html || `https://github.com/${repoPath}/tree/${branch}`,
     };
   } catch {
     return null;
   }
 }
 
-async function getWorkflowRuns(appId) {
-  const app = db.getApp(appId);
-  if (!app) return [];
-  const cfg = app.config;
-  const r = parseRepo(cfg.repo);
-  if (!r) return [];
+async function getAllBranches(repoUrl, token) {
+  const repoPath = extractRepoPath(repoUrl);
+  if (!repoPath) return [];
+
   try {
-    const gh = ghClient();
-    const { data } = await gh.get(`/repos/${r.owner}/${r.repo}/actions/runs?per_page=10`);
-    return data.workflow_runs.map(run => ({
-      id: run.id,
-      name: run.name,
-      status: run.status,
-      conclusion: run.conclusion,
-      sha: run.head_sha.slice(0, 7),
-      branch: run.head_branch,
-      created_at: run.created_at,
-      html_url: run.html_url,
+    const data = await githubGet(
+      `https://api.github.com/repos/${repoPath}/branches?per_page=30`,
+      token
+    );
+    if (!Array.isArray(data)) return [];
+    return data.map(b => ({
+      name: b.name,
+      sha_short: b.commit?.sha?.substring(0, 7) || '',
     }));
   } catch {
     return [];
   }
 }
 
-async function listBranches(appId) {
-  const app = db.getApp(appId);
-  if (!app) return [];
-  const cfg = app.config;
-  const r = parseRepo(cfg.repo);
-  if (!r) return [];
+async function getRecentCommits(repoUrl, branch, token, limit = 5) {
+  const repoPath = extractRepoPath(repoUrl);
+  if (!repoPath) return [];
+
   try {
-    const gh = ghClient();
-    const { data } = await gh.get(`/repos/${r.owner}/${r.repo}/branches?per_page=30`);
-    return data.map(b => b.name);
+    const data = await githubGet(
+      `https://api.github.com/repos/${repoPath}/commits?sha=${encodeURIComponent(branch)}&per_page=${limit}`,
+      token
+    );
+    if (!Array.isArray(data)) return [];
+    return data.map(c => ({
+      sha: c.sha?.substring(0, 7),
+      message: c.commit?.message?.split('\n')[0] || '',
+      author: c.commit?.author?.name || '',
+      date: c.commit?.author?.date || '',
+    }));
   } catch {
     return [];
   }
 }
 
-module.exports = { triggerDeploy, getLatestCommit, getWorkflowRuns, parseRepo, listBranches };
+module.exports = { getBranchInfo, getAllBranches, getRecentCommits, extractRepoPath };
