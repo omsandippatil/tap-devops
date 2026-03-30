@@ -12,8 +12,8 @@ die()     { error "$*"; exit 1; }
 header()  { echo -e "\n${BOLD}${CYAN}━━━  $*  ━━━${RESET}"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="${SCRIPT_DIR}/../config.env"
-CONFIG_FILE="$(realpath "${CONFIG_FILE}" 2>/dev/null || echo "${SCRIPT_DIR}/../config.env")"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"          # <── repo root, one level up from setup/
+CONFIG_FILE="${REPO_ROOT}/config.env"
 
 DASHBOARD_HOST=""
 DASHBOARD_USER="azureuser"
@@ -40,7 +40,7 @@ Options:
   --port PORT          SSH port (default: 22)
   --dashboard-port N   Dashboard HTTP port (default: 9000)
   --dir  PATH          Remote install directory (default: /home/azureuser/tap-dashboard)
-  --config FILE        Path to config.env (default: ../config.env relative to script)
+  --config FILE        Path to config.env (default: <repo-root>/config.env)
   --node-version N     Node.js version to install (default: 20)
   --update             Pull latest code and restart (no full reinstall)
   --restart            Restart dashboard service only
@@ -53,54 +53,38 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --host)
-      [[ $# -ge 2 ]] || die "--host requires a value"
-      DASHBOARD_HOST="$2"; shift 2 ;;
-    --pem)
-      [[ $# -ge 2 ]] || die "--pem requires a value"
-      PEM_FILE="$2"; shift 2 ;;
-    --user)
-      [[ $# -ge 2 ]] || die "--user requires a value"
-      DASHBOARD_USER="$2"; shift 2 ;;
-    --port)
-      [[ $# -ge 2 ]] || die "--port requires a value"
-      DASHBOARD_SSH_PORT="$2"; shift 2 ;;
-    --dashboard-port)
-      [[ $# -ge 2 ]] || die "--dashboard-port requires a value"
-      DASHBOARD_PORT="$2"; shift 2 ;;
-    --dir)
-      [[ $# -ge 2 ]] || die "--dir requires a value"
-      DASHBOARD_DIR="$2"; shift 2 ;;
-    --config)
-      [[ $# -ge 2 ]] || die "--config requires a value"
-      CONFIG_FILE="$2"; shift 2 ;;
-    --node-version)
-      [[ $# -ge 2 ]] || die "--node-version requires a value"
-      NODE_VERSION="$2"; shift 2 ;;
-    --update)       UPDATE_ONLY=true; shift ;;
-    --restart)      RESTART_ONLY=true; shift ;;
-    --dry-run)      DRY_RUN=true; shift ;;
-    --force)        FORCE=true; shift ;;
-    --help)         usage ;;
+    --host)           [[ $# -ge 2 ]] || die "--host requires a value";           DASHBOARD_HOST="$2";     shift 2 ;;
+    --pem)            [[ $# -ge 2 ]] || die "--pem requires a value";            PEM_FILE="$2";           shift 2 ;;
+    --user)           [[ $# -ge 2 ]] || die "--user requires a value";           DASHBOARD_USER="$2";     shift 2 ;;
+    --port)           [[ $# -ge 2 ]] || die "--port requires a value";           DASHBOARD_SSH_PORT="$2"; shift 2 ;;
+    --dashboard-port) [[ $# -ge 2 ]] || die "--dashboard-port requires a value"; DASHBOARD_PORT="$2";     shift 2 ;;
+    --dir)            [[ $# -ge 2 ]] || die "--dir requires a value";            DASHBOARD_DIR="$2";      shift 2 ;;
+    --config)         [[ $# -ge 2 ]] || die "--config requires a value";         CONFIG_FILE="$2";        shift 2 ;;
+    --node-version)   [[ $# -ge 2 ]] || die "--node-version requires a value";   NODE_VERSION="$2";       shift 2 ;;
+    --update)         UPDATE_ONLY=true;  shift ;;
+    --restart)        RESTART_ONLY=true; shift ;;
+    --dry-run)        DRY_RUN=true;      shift ;;
+    --force)          FORCE=true;        shift ;;
+    --help)           usage ;;
     *) die "Unknown argument: $1" ;;
   esac
 done
 
+# ── Load config.env ──────────────────────────────────────────────────────────
 if [[ -f "$CONFIG_FILE" ]]; then
-  set -a
-  source "$CONFIG_FILE"
-  set +a
+  set -a; source "$CONFIG_FILE"; set +a
   info "Loaded config: $CONFIG_FILE"
 else
   warn "Config file not found: $CONFIG_FILE"
 fi
 
-[[ -n "${DASHBOARD_HOST:-}" ]]   || DASHBOARD_HOST="${DASHBOARD_SERVER_HOST:-}"
-[[ -n "${PEM_FILE:-}" ]]         || PEM_FILE="${DASHBOARD_PEM_FILE:-}"
-[[ -n "${DASHBOARD_USER:-}" ]]   || DASHBOARD_USER="${DASHBOARD_SERVER_USER:-azureuser}"
+# CLI flags take precedence; fall back to config.env vars, then defaults
+[[ -n "${DASHBOARD_HOST:-}" ]]     || DASHBOARD_HOST="${DASHBOARD_SERVER_HOST:-}"
+[[ -n "${PEM_FILE:-}" ]]           || PEM_FILE="${DASHBOARD_PEM_FILE:-}"
+[[ -n "${DASHBOARD_USER:-}" ]]     || DASHBOARD_USER="${DASHBOARD_SERVER_USER:-azureuser}"
 [[ -n "${DASHBOARD_SSH_PORT:-}" ]] || DASHBOARD_SSH_PORT="${DASHBOARD_SSH_PORT:-22}"
-[[ -n "${DASHBOARD_PORT:-}" ]]   || DASHBOARD_PORT="${DASHBOARD_PORT:-9000}"
-[[ -n "${NODE_VERSION:-}" ]]     || NODE_VERSION=20
+[[ -n "${DASHBOARD_PORT:-}" ]]     || DASHBOARD_PORT="${DASHBOARD_PORT:-9000}"
+[[ -n "${NODE_VERSION:-}" ]]       || NODE_VERSION=20
 
 [[ -n "$DASHBOARD_HOST" ]] || die "DASHBOARD_HOST not set — add DASHBOARD_SERVER_HOST to config.env or pass --host"
 [[ -n "$PEM_FILE" ]]       || die "PEM_FILE not set — add DASHBOARD_PEM_FILE to config.env or pass --pem"
@@ -112,16 +96,21 @@ SSH_OPTS="-i ${PEM_FILE} -p ${DASHBOARD_SSH_PORT} -o StrictHostKeyChecking=no -o
 SCP_OPTS="-i ${PEM_FILE} -P ${DASHBOARD_SSH_PORT} -o StrictHostKeyChecking=no"
 TARGET="${DASHBOARD_USER}@${DASHBOARD_HOST}"
 
-FILES_DIR="${SCRIPT_DIR}/dashboard"
-[[ -d "$FILES_DIR" ]] || FILES_DIR="${SCRIPT_DIR}"
+# ── Locate dashboard source files ────────────────────────────────────────────
+# Canonical location: <repo-root>/dashboard/   (e.g. tap-devops/dashboard/)
+# Fallback 1: dashboard/ subdirectory next to this script (setup/dashboard/)
+# Fallback 2: script's own directory (legacy / flat-layout)
+if   [[ -d "${REPO_ROOT}/dashboard" ]];  then FILES_DIR="${REPO_ROOT}/dashboard"
+elif [[ -d "${SCRIPT_DIR}/dashboard" ]]; then FILES_DIR="${SCRIPT_DIR}/dashboard"
+else                                          FILES_DIR="${SCRIPT_DIR}"
+fi
+info "Dashboard source: ${FILES_DIR}"
 
+# ── Helpers ──────────────────────────────────────────────────────────────────
 remote() {
   local desc="$1"; shift
   info "Remote: $desc"
-  if $DRY_RUN; then
-    echo -e "  ${YELLOW}$ $*${RESET}"
-    return 0
-  fi
+  if $DRY_RUN; then echo -e "  ${YELLOW}$ $*${RESET}"; return 0; fi
   ssh $SSH_OPTS "$TARGET" "$@" 2>&1
 }
 
@@ -129,10 +118,7 @@ remote_heredoc() {
   local desc="$1"
   local body="$2"
   info "Remote script: $desc"
-  if $DRY_RUN; then
-    echo -e "  ${YELLOW}[heredoc: $desc]${RESET}"
-    return 0
-  fi
+  if $DRY_RUN; then echo -e "  ${YELLOW}[heredoc: $desc]${RESET}"; return 0; fi
   ssh $SSH_OPTS "$TARGET" "bash -s" <<EOF
 set -euo pipefail
 ${body}
@@ -143,10 +129,7 @@ upload() {
   local src="$1"
   local dst="$2"
   info "Upload: $src → ${TARGET}:${dst}"
-  if $DRY_RUN; then
-    echo -e "  ${YELLOW}scp ${src} ${TARGET}:${dst}${RESET}"
-    return 0
-  fi
+  if $DRY_RUN; then echo -e "  ${YELLOW}scp ${src} ${TARGET}:${dst}${RESET}"; return 0; fi
   scp $SCP_OPTS "$src" "${TARGET}:${dst}"
 }
 
@@ -157,12 +140,13 @@ confirm() {
   [[ "${ans,,}" == "y" ]] || { info "Aborted."; exit 0; }
 }
 
+# ── Pre-flight ────────────────────────────────────────────────────────────────
 header "Pre-flight"
-info "Target : ${TARGET}"
-info "Dir    : ${DASHBOARD_DIR}"
-info "Port   : ${DASHBOARD_PORT}"
-info "Config : ${CONFIG_FILE}"
-info "Files  : ${FILES_DIR}"
+info "Target  : ${TARGET}"
+info "Dir     : ${DASHBOARD_DIR}"
+info "Port    : ${DASHBOARD_PORT}"
+info "Config  : ${CONFIG_FILE}"
+info "Sources : ${FILES_DIR}"
 
 if ! $DRY_RUN; then
   ssh $SSH_OPTS "$TARGET" "echo 'SSH_OK'" > /dev/null \
@@ -170,6 +154,7 @@ if ! $DRY_RUN; then
 fi
 success "SSH connection verified"
 
+# ── --restart ─────────────────────────────────────────────────────────────────
 if $RESTART_ONLY; then
   header "Restart dashboard service"
   remote_heredoc "restart" "
@@ -182,12 +167,17 @@ echo \"tap-dashboard: \${state}\"
   exit 0
 fi
 
+# ── --update ──────────────────────────────────────────────────────────────────
 if $UPDATE_ONLY; then
   header "Update: upload files and restart"
   for f in server.js db.js ssh.js github.js package.json; do
     src="${FILES_DIR}/${f}"
-    [[ -f "$src" ]] && upload "$src" "${DASHBOARD_DIR}/${f}" || warn "Not found, skipping: $f"
+    [[ -f "$src" ]] && upload "$src" "${DASHBOARD_DIR}/${f}" \
+                    || warn "Not found, skipping: $f"
   done
+  if [[ -f "${FILES_DIR}/public/index.html" ]]; then
+    upload "${FILES_DIR}/public/index.html" "${DASHBOARD_DIR}/public/index.html"
+  fi
   upload "$CONFIG_FILE" "${DASHBOARD_DIR}/.env"
   remote_heredoc "npm install and restart" "
 cd ${DASHBOARD_DIR}
@@ -212,6 +202,7 @@ curl -sf http://localhost:${DASHBOARD_PORT}/api/auth/status | grep -q 'authentic
   exit 0
 fi
 
+# ── Full install ──────────────────────────────────────────────────────────────
 confirm "This will install Node.js ${NODE_VERSION}, npm dependencies, and set up the TAP dashboard on ${TARGET}."
 
 header "Step 1 — System packages"
@@ -280,7 +271,7 @@ echo 'npm install done.'
 "
   success "Dependencies installed"
 else
-  warn "No JS files were uploaded — skipping npm install. Add server.js / package.json to ${FILES_DIR}."
+  die "No JS source files found in '${FILES_DIR}'. Expected server.js, db.js, ssh.js, github.js, package.json."
 fi
 
 header "Step 6 — Systemd user service"
