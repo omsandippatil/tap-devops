@@ -137,6 +137,7 @@ SSH_OPTS="-i ${PLG_SSH_KEY_PATH} -p ${PLG_SSH_PORT} -o StrictHostKeyChecking=no 
 TARGET="${PLG_SERVER_USER}@${PLG_SERVER_HOST}"
 ALL_SERVICES="plg-app plg-api plg-postgres plg-rabbitmq plg-redis-cache plg-redis-queue"
 APP_SERVICES="plg-app plg-api"
+PLG_CONTAINERS="plg-app plg-api plg-postgres plg-rabbitmq plg-redis-cache plg-redis-queue"
 
 PLG_WAIT() {
   local secs="$1"
@@ -345,54 +346,42 @@ journalctl --user -u plg-api.service -n 10 --no-pager 2>/dev/null || echo '(no l
 do_full_clean() {
   header "Full clean"
   _deploy_log "Action: full clean"
-  run_remote_heredoc "Full clean — everything" "
+  run_remote_heredoc "Full clean — PLG only" "
 set +e
 
 for svc in ${ALL_SERVICES}; do
   systemctl --user stop    \${svc}.service 2>/dev/null || true
   systemctl --user disable \${svc}.service 2>/dev/null || true
 done
-rm -f \"\${HOME}/.config/systemd/user/plg-\"*.service
+
+for svc in ${ALL_SERVICES}; do
+  rm -f \"\${HOME}/.config/systemd/user/\${svc}.service\"
+done
 systemctl --user daemon-reload 2>/dev/null || true
 
-pkill -f uvicorn 2>/dev/null || true
-pkill -f 'python3.*app.py' 2>/dev/null || true
-sleep 2
+for ctr in ${PLG_CONTAINERS}; do
+  podman stop \${ctr} 2>/dev/null || true
+  podman rm -f \${ctr} 2>/dev/null || true
+done
 
-podman stop \$(podman ps -aq) 2>/dev/null || true
-podman rm -f \$(podman ps -aq) 2>/dev/null || true
-podman volume rm \$(podman volume ls -q) 2>/dev/null || true
+for vol in \$(podman volume ls --format '{{.Name}}' | grep '^plg'); do
+  podman volume rm \${vol} 2>/dev/null || true
+done
+
 podman image prune -af 2>/dev/null || true
 
 rm -rf ${PLG_APP_DIR}
 rm -rf \${HOME}/\$(basename ${PLG_APP_DIR})__staging
-find \${HOME} -maxdepth 1 -name '\$(basename ${PLG_APP_DIR})__backup_*' -type d -exec rm -rf {} + 2>/dev/null || true
-find \${HOME} -maxdepth 3 -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-
-rm -rf \${HOME}/.nvm
-rm -rf \${HOME}/.npm
-rm -rf \${HOME}/.yarn
-rm -rf \${HOME}/.cache/pip
-rm -rf \${HOME}/.cache/huggingface
-rm -rf \${HOME}/.cache/torch
-rm -rf \${HOME}/.local/share/containers
-rm -rf \${HOME}/.config/containers
+find \${HOME} -maxdepth 1 -name \"\$(basename ${PLG_APP_DIR})__backup_*\" -type d -exec rm -rf {} + 2>/dev/null || true
+find ${PLG_APP_DIR%/*} -maxdepth 3 -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
 
 echo ''
-echo '=== Remaining processes ==='
-ps aux | grep -E 'python|uvicorn|podman|node' | grep -v grep || echo 'none'
+echo '=== Remaining PLG containers ==='
+podman ps -a --filter name=plg 2>/dev/null || echo 'none'
 
 echo ''
-echo '=== Remaining containers ==='
-podman ps -a 2>/dev/null || echo 'none'
-
-echo ''
-echo '=== Remaining volumes ==='
-podman volume ls 2>/dev/null || echo 'none'
-
-echo ''
-echo '=== Home directory ==='
-ls -la \${HOME}/
+echo '=== Remaining PLG volumes ==='
+podman volume ls --filter name=plg 2>/dev/null || echo 'none'
 
 echo ''
 echo '=== Disk usage ==='
@@ -424,13 +413,12 @@ systemctl --user daemon-reload 2>/dev/null || true
   if $PLG_CLEAN_CONTAINERS; then
     header "Clean: containers"
     _deploy_log "Action: clean containers"
-    run_remote_heredoc "Remove containers" "
+    run_remote_heredoc "Remove PLG containers" "
 set +e
-pkill -f uvicorn 2>/dev/null || true
-pkill -f 'python3.*app.py' 2>/dev/null || true
-sleep 2
-podman stop \$(podman ps -aq) 2>/dev/null || true
-podman rm -f \$(podman ps -aq) 2>/dev/null || true
+for ctr in ${PLG_CONTAINERS}; do
+  podman stop \${ctr} 2>/dev/null || true
+  podman rm -f \${ctr} 2>/dev/null || true
+done
 podman image prune -af 2>/dev/null || true
 "
     success "Containers cleaned"
@@ -440,9 +428,11 @@ podman image prune -af 2>/dev/null || true
   if $PLG_CLEAN_VOLUMES; then
     header "Clean: volumes"
     _deploy_log "Action: clean volumes"
-    run_remote_heredoc "Remove volumes" "
+    run_remote_heredoc "Remove PLG volumes" "
 set +e
-podman volume rm \$(podman volume ls -q) 2>/dev/null || true
+for vol in \$(podman volume ls --format '{{.Name}}' | grep '^plg'); do
+  podman volume rm \${vol} 2>/dev/null || true
+done
 "
     success "Volumes cleaned"
     did=1
@@ -455,8 +445,8 @@ podman volume rm \$(podman volume ls -q) 2>/dev/null || true
 set +e
 rm -rf ${PLG_APP_DIR}
 rm -rf \${HOME}/\$(basename ${PLG_APP_DIR})__staging
-find \${HOME} -maxdepth 1 -name '\$(basename ${PLG_APP_DIR})__backup_*' -type d -exec rm -rf {} + 2>/dev/null || true
-find \${HOME} -maxdepth 3 -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+find \${HOME} -maxdepth 1 -name \"\$(basename ${PLG_APP_DIR})__backup_*\" -type d -exec rm -rf {} + 2>/dev/null || true
+find ${PLG_APP_DIR%/*} -maxdepth 3 -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
 "
     success "Directories cleaned"
     did=1
@@ -498,8 +488,8 @@ log_deploy() {
 rm -rf \"\${STAGING}\"
 git clone --depth 1 --branch \"\${BRANCH}\" \"\${REPO}\" \"\${STAGING}\"
 
-if command -v ${PLG_FRAPPE_PYTHON:-python3} &>/dev/null; then
-  PYTHON_BIN=${PLG_FRAPPE_PYTHON:-python3}
+if command -v ${PLG_PYTHON:-python3} &>/dev/null; then
+  PYTHON_BIN=${PLG_PYTHON:-python3}
 else
   PYTHON_BIN=\$(command -v python3)
 fi
@@ -683,8 +673,8 @@ if step_enabled 5; then
   _deploy_log "Step 5: python venv"
   VENV_BODY="
 cd ${PLG_APP_DIR}
-if command -v ${PLG_FRAPPE_PYTHON:-python3} &>/dev/null; then
-  PYTHON_BIN=${PLG_FRAPPE_PYTHON:-python3}
+if command -v ${PLG_PYTHON:-python3} &>/dev/null; then
+  PYTHON_BIN=${PLG_PYTHON:-python3}
 else
   PYTHON_BIN=\$(command -v python3)
 fi
@@ -784,7 +774,7 @@ ExecStart=/usr/bin/podman run \
         --replace \
         -d \
         --name plg-redis-cache \
-        -p 127.0.0.1:${PLG_FRAPPE_REDIS_CACHE_PORT}:6379 \
+        -p 127.0.0.1:${PLG_REDIS_CACHE_PORT}:6379 \
         docker.io/library/redis:7-alpine
 ExecStop=/usr/bin/podman stop --ignore -t 10 --cidfile=%t/%n.ctr-id
 ExecStopPost=/usr/bin/podman rm -f --ignore -t 10 --cidfile=%t/%n.ctr-id
@@ -814,7 +804,7 @@ ExecStart=/usr/bin/podman run \
         --replace \
         -d \
         --name plg-redis-queue \
-        -p 127.0.0.1:${PLG_FRAPPE_REDIS_QUEUE_PORT}:6379 \
+        -p 127.0.0.1:${PLG_REDIS_QUEUE_PORT}:6379 \
         docker.io/library/redis:7-alpine
 ExecStop=/usr/bin/podman stop --ignore -t 10 --cidfile=%t/%n.ctr-id
 ExecStopPost=/usr/bin/podman rm -f --ignore -t 10 --cidfile=%t/%n.ctr-id
@@ -844,6 +834,28 @@ if step_enabled 10; then
   POSTGRES_BODY="
 mkdir -p \"\${HOME}/.config/systemd/user/\"
 
+echo '--- pre-flight checks ---'
+
+if [[ ! -f ${PLG_APP_DIR}/database/init.sql ]]; then
+  echo 'ERROR: init.sql not found at ${PLG_APP_DIR}/database/init.sql'
+  ls -la ${PLG_APP_DIR}/database/ 2>/dev/null || echo '(database/ dir missing)'
+  exit 1
+fi
+echo 'init.sql: OK'
+
+if ss -tlnp 2>/dev/null | grep -q ':${PLG_POSTGRES_PORT} '; then
+  echo 'ERROR: port ${PLG_POSTGRES_PORT} already in use:'
+  ss -tlnp | grep ':${PLG_POSTGRES_PORT} '
+  exit 1
+fi
+echo 'port ${PLG_POSTGRES_PORT}: free'
+
+podman volume inspect ${PLG_POSTGRES_VOLUME_NAME} &>/dev/null \
+  || podman volume create ${PLG_POSTGRES_VOLUME_NAME}
+echo 'volume ${PLG_POSTGRES_VOLUME_NAME}: OK'
+
+echo '--- writing service unit ---'
+
 cat > \"\${HOME}/.config/systemd/user/plg-postgres.service\" << 'SVCEOF'
 [Unit]
 Description=PLG Postgres
@@ -869,7 +881,7 @@ ExecStart=/usr/bin/podman run \
         -e POSTGRES_PASSWORD=${PLG_POSTGRES_PASSWORD} \
         -e PGDATA=/var/lib/postgresql/data/pgdata \
         -v ${PLG_POSTGRES_VOLUME_NAME}:/var/lib/postgresql/data \
-        -v ${PLG_APP_DIR}/database/init.sql:/docker-entrypoint-initdb.d/init.sql \
+        -v ${PLG_APP_DIR}/database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro \
         ${PLG_POSTGRES_IMAGE}
 ExecStop=/usr/bin/podman stop --ignore -t 10 --cidfile=%t/%n.ctr-id
 ExecStopPost=/usr/bin/podman rm -f --ignore -t 10 --cidfile=%t/%n.ctr-id
@@ -881,7 +893,13 @@ WantedBy=default.target
 SVCEOF
 
 systemctl --user daemon-reload
-systemctl --user enable --now plg-postgres.service
+systemctl --user enable --now plg-postgres.service || {
+  echo '--- plg-postgres.service failed to start, dumping journal ---'
+  journalctl --user -u plg-postgres.service -n 40 --no-pager 2>/dev/null || true
+  echo '--- podman logs ---'
+  podman logs ${PLG_POSTGRES_CONTAINER_NAME} 2>/dev/null || true
+  exit 1
+}
 
 echo 'Waiting ${_PG_INIT_WAIT}s for Postgres...'
 sleep ${_PG_INIT_WAIT}
@@ -890,7 +908,12 @@ for i in 1 2 3 4 5 6; do
   podman exec ${PLG_POSTGRES_CONTAINER_NAME} pg_isready &>/dev/null && { echo 'Postgres ready.'; break; }
   echo \"Attempt \$i/6 — waiting 10s...\"
   sleep 10
-  [[ \$i -eq 6 ]] && { echo 'ERROR: Postgres not ready'; exit 1; }
+  if [[ \$i -eq 6 ]]; then
+    echo 'ERROR: Postgres not ready after all attempts'
+    journalctl --user -u plg-postgres.service -n 20 --no-pager 2>/dev/null || true
+    podman logs ${PLG_POSTGRES_CONTAINER_NAME} 2>/dev/null || true
+    exit 1
+  fi
 done
 "
   run_remote_heredoc "Start Postgres" "$POSTGRES_BODY"

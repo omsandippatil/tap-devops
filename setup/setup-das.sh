@@ -95,9 +95,27 @@ fi
 
 chmod 600 "$PEM_FILE"
 
-SSH_OPTS="-i ${PEM_FILE} -p ${DASHBOARD_SSH_PORT} -o StrictHostKeyChecking=no -o ConnectTimeout=15"
-SCP_OPTS="-i ${PEM_FILE} -P ${DASHBOARD_SSH_PORT} -o StrictHostKeyChecking=no"
+SSH_OPTS="-i ${PEM_FILE} -p ${DASHBOARD_SSH_PORT} -o StrictHostKeyChecking=no -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=10"
+SCP_OPTS="-i ${PEM_FILE} -P ${DASHBOARD_SSH_PORT} -o StrictHostKeyChecking=no -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=10"
 TARGET="${DASHBOARD_USER}@${DASHBOARD_HOST}"
+
+ssh_with_retry() {
+  local max=5 delay=8 attempt=1
+  while true; do
+    if ssh $SSH_OPTS "$TARGET" "$@" 2>&1; then
+      return 0
+    fi
+    local rc=$?
+    if [[ $attempt -ge $max ]]; then
+      error "SSH failed after $max attempts"
+      return $rc
+    fi
+    warn "SSH attempt $attempt/$max failed — retrying in ${delay}s..."
+    attempt=$(( attempt + 1 ))
+    sleep $delay
+    delay=$(( delay + 4 ))
+  done
+}
 
 remote() {
   local desc="$1" body="$2"
@@ -106,7 +124,7 @@ remote() {
     echo -e "  ${YELLOW}[dry-run]${RESET} $desc"
     return 0
   fi
-  ssh $SSH_OPTS "$TARGET" bash -s -- <<EOF
+  ssh_with_retry bash -s -- <<EOF
 set -euo pipefail
 ${body}
 EOF
@@ -119,7 +137,7 @@ remote_soft() {
     echo -e "  ${YELLOW}[dry-run]${RESET} $desc"
     return 0
   fi
-  ssh $SSH_OPTS "$TARGET" bash -s -- <<EOF
+  ssh_with_retry bash -s -- <<EOF
 set +e
 ${body}
 EOF
@@ -132,7 +150,21 @@ upload() {
     echo -e "  ${YELLOW}[dry-run: scp $(basename "$src")]${RESET}"
     return 0
   fi
-  scp $SCP_OPTS "$src" "${TARGET}:${dst}"
+  local max=4 delay=6 attempt=1
+  while true; do
+    if scp $SCP_OPTS "$src" "${TARGET}:${dst}" 2>&1; then
+      return 0
+    fi
+    local rc=$?
+    if [[ $attempt -ge $max ]]; then
+      error "scp failed after $max attempts: $src"
+      return $rc
+    fi
+    warn "scp attempt $attempt/$max failed — retrying in ${delay}s..."
+    attempt=$(( attempt + 1 ))
+    sleep $delay
+    delay=$(( delay + 4 ))
+  done
 }
 
 confirm() {
@@ -149,12 +181,29 @@ upload_setup_scripts() {
     fname="$(basename "$f")"
     [[ "$fname" == "setup-das.sh" ]] && { info "Skipping: $fname"; continue; }
     upload "$f" "${INSTALL_DIR}/setup/${fname}"
-    uploaded=$((uploaded + 1))
+    uploaded=$(( uploaded + 1 ))
   done
   [[ $uploaded -gt 0 ]] && success "$uploaded setup script(s) uploaded" \
     || warn "No setup scripts uploaded"
   remote_soft "chmod setup scripts" \
     "chmod +x '${INSTALL_DIR}/setup/'*.sh 2>/dev/null || true"
+}
+
+wait_for_ssh() {
+  info "Waiting for SSH to become available on ${DASHBOARD_HOST}:${DASHBOARD_SSH_PORT}..."
+  local max=18 delay=10 attempt=1
+  while true; do
+    if ssh $SSH_OPTS "$TARGET" "echo SSH_OK" >/dev/null 2>&1; then
+      success "SSH connection established"
+      return 0
+    fi
+    if [[ $attempt -ge $max ]]; then
+      die "SSH not available after $(( max * delay ))s — check server status and NSG rules"
+    fi
+    warn "SSH attempt $attempt/$max — server may be busy, retrying in ${delay}s..."
+    attempt=$(( attempt + 1 ))
+    sleep $delay
+  done
 }
 
 do_clean() {
@@ -166,7 +215,7 @@ do_clean() {
     return 0
   fi
 
-  ssh $SSH_OPTS "$TARGET" bash -s -- \
+  ssh_with_retry bash -s -- \
     "${SERVICE_NAME}" \
     "${INSTALL_DIR}" \
     "${DASHBOARD_USER}" <<'REMOTE'
@@ -183,7 +232,7 @@ state=$(systemctl --user is-active "${SVC}.service" 2>/dev/null || echo "inactiv
 echo "[clean] State after stop: ${state}"
 
 if [[ "$state" != "inactive" && "$state" != "failed" ]]; then
-  echo "[clean] systemctl stop did not work, killing by name..."
+  echo "[clean] Killing by process name..."
   pkill -f "node server.js" || true
   sleep 1
 fi
@@ -203,7 +252,7 @@ if [[ -d "${IDIR}" ]]; then
   rm -rf "${IDIR}"
   echo "[clean] Deleted: ${IDIR}"
 else
-  echo "[clean] Directory not found (already clean): ${IDIR}"
+  echo "[clean] Already clean: ${IDIR}"
 fi
 
 echo "[clean] Done."
@@ -221,10 +270,8 @@ info "Dashboard : ${DASHBOARD_FILES}"
 info "Setup     : ${SETUP_FILES}"
 
 if ! $DRY_RUN; then
-  ssh $SSH_OPTS "$TARGET" "echo 'SSH_OK'" > /dev/null \
-    || die "Cannot connect to ${TARGET}."
+  wait_for_ssh
 fi
-success "SSH OK"
 
 if $RESTART_ONLY; then
   header "Restart"
@@ -232,7 +279,7 @@ if $RESTART_ONLY; then
     echo -e "  ${YELLOW}[dry-run] would restart ${SERVICE_NAME}${RESET}"
     exit 0
   fi
-  ssh $SSH_OPTS "$TARGET" bash -s -- "${SERVICE_NAME}" <<'REMOTE'
+  ssh_with_retry bash -s -- "${SERVICE_NAME}" <<'REMOTE'
 set +e
 SVC="$1"
 systemctl --user restart "${SVC}.service"
@@ -266,7 +313,7 @@ if $UPDATE_ONLY; then
     echo -e "  ${YELLOW}[dry-run] would npm install + restart${RESET}"
     exit 0
   fi
-  ssh $SSH_OPTS "$TARGET" bash -s -- "${INSTALL_DIR}" "${SERVICE_NAME}" <<'REMOTE'
+  ssh_with_retry bash -s -- "${INSTALL_DIR}" "${SERVICE_NAME}" <<'REMOTE'
 set -euo pipefail
 IDIR="$1"
 SVC="$2"
@@ -361,7 +408,7 @@ header "Step 8 — Systemd service"
 if $DRY_RUN; then
   echo -e "  ${YELLOW}[dry-run] would write + enable ${SERVICE_NAME}.service${RESET}"
 else
-  ssh $SSH_OPTS "$TARGET" bash -s -- \
+  ssh_with_retry bash -s -- \
     "${INSTALL_DIR}" \
     "${SERVICE_NAME}" \
     "${DASHBOARD_USER}" <<'REMOTE'
@@ -449,7 +496,7 @@ DB='${INSTALL_DIR}/data/tap.db'
 [[ -f \"\$DB\" ]] && sqlite3 \"\$DB\" 'SELECT app_id, setup_script FROM apps;' || true
 echo ''
 echo 'Scripts in setup dir:'
-ls -la '${INSTALL_DIR}/setup/' 2>/dev/null || echo '(none)'
+ls '${INSTALL_DIR}/setup/' 2>/dev/null || echo '(none)'
 "
 
 echo ""
