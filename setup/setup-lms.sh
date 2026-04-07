@@ -54,15 +54,15 @@ while [[ $# -gt 0 ]]; do
 Usage: setup-lms.sh [--config FILE] [OPTIONS]
 
 Deployment modes:
-  (no flags)          Full fresh deploy (steps 1-16)
+  (no flags)          Full fresh deploy
   --update            git pull + bench migrate + restart
-  --update-config     Sync Python deps, site config, and DB settings then restart
+  --update-config     Sync site config and DB settings then restart
   --restart           Restart all LMS services
   --stop              Stop all LMS services
   --status            Show full health status
   --clean             Deep wipe then redeploy
   --clean-only        Deep wipe and exit
-  --clean-services    Stop containers, volumes, and supervisor config for this bench
+  --clean-services    Stop containers, volumes, and supervisor config
   --clean-bench       Wipe bench dir + site DB only
 
 Step control:
@@ -71,7 +71,7 @@ Step control:
   --steps N,M,X-Y     Comma-separated list/ranges
 
 Options:
-  --config FILE       Path to lms-config.env
+  --config FILE       Path to config.env
   --dry-run           Print SSH commands without executing
   --force             Skip confirmation prompts
   --verbose           Enable set -x on remote scripts
@@ -149,7 +149,6 @@ LMS_REDIS_QUEUE_CONTAINER="${LMS_REDIS_QUEUE_CONTAINER:-lms-${_BENCH_ID}-redis-q
 _SUPERVISOR_CONF_NAME="lms-bench-${_BENCH_ID}"
 _NGINX_CONF_NAME="lms-bench-${_BENCH_ID}"
 _SERVICE_NAME="lms-app-${_BENCH_ID}"
-_WRAPPER_SCRIPT="/usr/local/bin/lms-app-${_BENCH_ID}"
 _SYSTEMD_UNIT="/etc/systemd/system/${_SERVICE_NAME}.service"
 
 _SITES_DIR="${LMS_FRAPPE_BENCH_DIR}/sites"
@@ -157,6 +156,11 @@ _SITE_DIR="${_SITES_DIR}/${LMS_FRAPPE_SITE}"
 _SITE_LOGS_DIR="${_SITE_DIR}/logs"
 _BENCH_LOGS_DIR="${LMS_FRAPPE_BENCH_DIR}/logs"
 _SITE_LOGS_ALT="${LMS_FRAPPE_BENCH_DIR}/${LMS_FRAPPE_SITE}/logs"
+_ASSETS_DIR="${_SITES_DIR}/assets"
+_VENV_PYTHON="${LMS_FRAPPE_BENCH_DIR}/env/bin/python"
+_VENV_ACTIVATE="${LMS_FRAPPE_BENCH_DIR}/env/bin/activate"
+
+_FRAPPE_APPS="frappe tap_lms business_theme_v14"
 
 if $LMS_DEPLOY_DOMAIN; then
   [[ -n "${LMS_DOMAIN_NAME:-}" ]] || die "--deploy-to-domain requires LMS_DOMAIN_NAME"
@@ -197,10 +201,9 @@ _tee_deploy_log() {
   done
 }
 
-SSH_CTRL_PATH="/tmp/lms-ssh-${_BENCH_ID}-${LMS_SERVER_USER}@${LMS_SERVER_HOST}:${LMS_SSH_PORT}"
-_SC="${LMS_SSH_ACCEPT_NEW:-false}"
+SSH_CTRL_PATH="/tmp/lms-ssh-ctl-${_BENCH_ID}-$$"
 _STRICT_OPT="StrictHostKeyChecking=yes"
-$_SC && _STRICT_OPT="StrictHostKeyChecking=accept-new"
+[[ "${LMS_SSH_ACCEPT_NEW:-false}" == "true" ]] && _STRICT_OPT="StrictHostKeyChecking=accept-new"
 
 SSH_BASE_OPTS="-i ${LMS_SSH_KEY_PATH} -p ${LMS_SSH_PORT} \
   -o ${_STRICT_OPT} \
@@ -210,18 +213,19 @@ SSH_BASE_OPTS="-i ${LMS_SSH_KEY_PATH} -p ${LMS_SSH_PORT} \
   -o ControlMaster=auto \
   -o ControlPath=${SSH_CTRL_PATH} \
   -o ControlPersist=120"
+
 SCP_OPTS="-i ${LMS_SSH_KEY_PATH} -P ${LMS_SSH_PORT} \
   -o ${_STRICT_OPT} \
   -o ConnectTimeout=15 \
   -o ControlMaster=auto \
   -o ControlPath=${SSH_CTRL_PATH} \
   -o ControlPersist=120"
+
 TARGET="${LMS_SERVER_USER}@${LMS_SERVER_HOST}"
 
-_ssh_master_up() {
-  ssh ${SSH_BASE_OPTS} -O check "$TARGET" 2>/dev/null && return 0
-  ssh ${SSH_BASE_OPTS} -fN "$TARGET" 2>/dev/null || true
-  sleep 1
+_ssh_verify() {
+  rm -f "${SSH_CTRL_PATH}" 2>/dev/null || true
+  ssh ${SSH_BASE_OPTS} -o BatchMode=yes "$TARGET" "echo SSH_OK" 2>/dev/null | grep -q SSH_OK
 }
 
 _effective_url() {
@@ -327,7 +331,7 @@ EOF
 }
 
 _ensure_all_log_dirs() {
-  run_remote_heredoc "Ensure all site log directories exist [${_BENCH_ID}]" "
+  run_remote_heredoc "Ensure log directories [${_BENCH_ID}]" "
 set +e
 for _d in \
   '/home/${LMS_FRAPPE_USER}/logs' \
@@ -342,63 +346,211 @@ done
 chmod o+rx '/home/${LMS_FRAPPE_USER}' 2>/dev/null || true
 chmod o+rx '${LMS_FRAPPE_BENCH_DIR}' 2>/dev/null || true
 chmod o+rx '${_SITES_DIR}' 2>/dev/null || true
-[[ -f '${_SITE_DIR}/site_config.json' ]] \
-  && chmod o+r '${_SITE_DIR}/site_config.json' 2>/dev/null || true
-echo 'All log dirs ensured'
+[[ -f '${_SITE_DIR}/site_config.json' ]] && chmod o+r '${_SITE_DIR}/site_config.json' 2>/dev/null || true
+echo 'log dirs ensured'
 "
 }
 
 _write_pgpass_remote() {
-  run_remote_heredoc "Write .pgpass for all postgres users [${_BENCH_ID}]" "
+  run_remote_heredoc "Write .pgpass [${_BENCH_ID}]" "
 set +e
-
 PGLINE_SU='${LMS_PG_HOST}:${LMS_PG_PORT}:*:postgres:${LMS_POSTGRES_PASSWORD}'
 
 _write_pgpass_for_user() {
   local home_dir=\"\$1\"
   local owner=\"\$2\"
   local pgpass=\"\${home_dir}/.pgpass\"
-
   echo \"\${PGLINE_SU}\" > \"\${pgpass}\"
-
   if [[ -f '${_SITE_DIR}/site_config.json' ]]; then
     _db_name=\$(python3 -c \"import json; c=json.load(open('${_SITE_DIR}/site_config.json')); print(c.get('db_name',''))\" 2>/dev/null || true)
     _db_pass=\$(python3 -c \"import json; c=json.load(open('${_SITE_DIR}/site_config.json')); print(c.get('db_password',''))\" 2>/dev/null || true)
     if [[ -n \"\${_db_name}\" && -n \"\${_db_pass}\" ]]; then
       echo '${LMS_PG_HOST}:${LMS_PG_PORT}:*:'\"\${_db_name}\"':'\"\${_db_pass}\" >> \"\${pgpass}\"
-      echo \"Added site DB entry for \${_db_name} to \${pgpass}\"
     fi
   fi
-
   chown \"\${owner}\":\"\${owner}\" \"\${pgpass}\"
   chmod 600 \"\${pgpass}\"
-  echo \"Written: \${pgpass}\"
+  echo \"written: \${pgpass}\"
 }
 
-_write_pgpass_for_user '/root'                      'root'
-_write_pgpass_for_user '/home/${LMS_FRAPPE_USER}'   '${LMS_FRAPPE_USER}'
+_write_pgpass_for_user '/root' 'root'
+_write_pgpass_for_user '/home/${LMS_FRAPPE_USER}' '${LMS_FRAPPE_USER}'
+[[ '${LMS_SERVICE_OWNER}' != '${LMS_FRAPPE_USER}' ]] && _write_pgpass_for_user '/home/${LMS_SERVICE_OWNER}' '${LMS_SERVICE_OWNER}'
+echo '.pgpass done'
+"
+}
 
-if [[ '${LMS_SERVICE_OWNER}' != '${LMS_FRAPPE_USER}' ]]; then
-  _write_pgpass_for_user '/home/${LMS_SERVICE_OWNER}' '${LMS_SERVICE_OWNER}'
+_fix_asset_permissions() {
+  run_remote_heredoc "Fix asset permissions [${_BENCH_ID}]" "
+set +e
+if [[ -d '${_ASSETS_DIR}' ]]; then
+  find '${_ASSETS_DIR}' -type d -exec chmod 755 {} +
+  find '${_ASSETS_DIR}' -type f -exec chmod 644 {} +
+  chown -R ${LMS_FRAPPE_USER}:${LMS_FRAPPE_USER} '${_ASSETS_DIR}'
+  echo 'asset permissions fixed'
+else
+  echo 'assets dir not found — skipping'
 fi
-echo '.pgpass update complete'
+"
+}
+
+_flush_redis_asset_keys() {
+  run_remote_heredoc "Flush Redis asset keys [${_BENCH_ID}]" "
+set +e
+redis-cli -h 127.0.0.1 -p ${LMS_REDIS_CACHE_PORT} KEYS 'assets*' 2>/dev/null \
+  | xargs -r redis-cli -h 127.0.0.1 -p ${LMS_REDIS_CACHE_PORT} DEL 2>/dev/null || true
+redis-cli -h 127.0.0.1 -p ${LMS_REDIS_CACHE_PORT} KEYS 'bundled_assets*' 2>/dev/null \
+  | xargs -r redis-cli -h 127.0.0.1 -p ${LMS_REDIS_CACHE_PORT} DEL 2>/dev/null || true
+echo 'redis asset keys flushed'
+"
+}
+
+_build_and_verify_assets() {
+  run_remote_as_frappe "Build assets for all apps [${_BENCH_ID}]" "
+cd ${LMS_FRAPPE_BENCH_DIR}
+
+_app_has_bundles() {
+  local _app=\"\$1\"
+  local _public_dir='${LMS_FRAPPE_BENCH_DIR}/apps/'\"\${_app}\"/\"\${_app}\"/public
+  [[ -f '${LMS_FRAPPE_BENCH_DIR}/apps/'\"\${_app}\"/package.json ]] && return 0
+  if [[ -d \"\${_public_dir}\" ]]; then
+    local _count=\$(find \"\${_public_dir}\" -name '*.bundle.js' -o -name '*.bundle.css' 2>/dev/null | wc -l)
+    [[ \"\${_count}\" -gt 0 ]] && return 0
+  fi
+  return 1
+}
+
+_app_has_js() {
+  local _app=\"\$1\"
+  local _dir='${_ASSETS_DIR}/'\"\${_app}\"/dist/js
+  [[ -d \"\${_dir}\" ]] && [[ -n \"\$(ls \"\${_dir}\"/*.js 2>/dev/null)\" ]]
+}
+
+_build_app() {
+  local _app=\"\$1\"
+  echo \"Building assets for: \${_app}\"
+  bench build --app \"\${_app}\" --production --force 2>&1
+}
+
+for _app in ${_FRAPPE_APPS}; do
+  _build_app \"\${_app}\"
+done
+
+_missing=0
+for _app in ${_FRAPPE_APPS}; do
+  if ! _app_has_js \"\${_app}\"; then
+    if _app_has_bundles \"\${_app}\"; then
+      echo \"WARNING: dist/js missing for \${_app} after per-app build — retrying\"
+      _build_app \"\${_app}\"
+      _missing=1
+    else
+      echo \"INFO: \${_app} has no JS bundles defined — skipping retry\"
+    fi
+  fi
+done
+
+for _app in ${_FRAPPE_APPS}; do
+  _dir='${_ASSETS_DIR}/'\"\${_app}\"/dist/js
+  if [[ -d \"\${_dir}\" ]] && [[ -n \"\$(ls \"\${_dir}\"/*.js 2>/dev/null)\" ]]; then
+    echo \"assets OK: \${_app} (\$(ls \"\${_dir}\" | wc -l) js files)\"
+  elif _app_has_bundles \"\${_app}\"; then
+    echo \"FATAL: assets missing for \${_app} after retry\" >&2
+    exit 1
+  else
+    echo \"INFO: \${_app} has no JS bundles — nothing to verify\"
+  fi
+done
+
+echo 'all assets verified'
+"
+  _fix_asset_permissions
+}
+
+_clear_bench_caches_only() {
+  run_remote_as_frappe "Clear bench caches [${_BENCH_ID}]" "
+cd ${LMS_FRAPPE_BENCH_DIR}
+bench --site ${LMS_FRAPPE_SITE} clear-cache
+bench --site ${LMS_FRAPPE_SITE} clear-website-cache
+echo 'caches cleared'
+"
+}
+
+_clear_all_caches() {
+  _clear_bench_caches_only
+  _flush_redis_asset_keys
+}
+
+_warm_asset_manifest() {
+  run_remote_as_frappe "Warm asset manifest into Redis [${_BENCH_ID}]" "
+cd ${LMS_FRAPPE_BENCH_DIR}
+source '${_VENV_ACTIVATE}'
+
+bench --site ${LMS_FRAPPE_SITE} execute frappe.utils.jinja_globals.get_bundled_assets 2>/dev/null || true
+bench --site ${LMS_FRAPPE_SITE} execute frappe.cache_manager.build_table_count_cache 2>/dev/null || true
+
+'${_VENV_PYTHON}' - <<'PYEOF'
+import sys
+sys.path.insert(0, '${LMS_FRAPPE_BENCH_DIR}/apps/frappe')
+import frappe
+frappe.init(site='${LMS_FRAPPE_SITE}', sites_path='${_SITES_DIR}')
+frappe.connect()
+try:
+    import os, json
+    assets_json_path = '${_ASSETS_DIR}/frappe/dist/asset-manifest.json'
+    if os.path.exists(assets_json_path):
+        with open(assets_json_path) as f:
+            manifest = json.load(f)
+        frappe.cache().set_value('assets_json', json.dumps(manifest))
+        print('asset manifest loaded from file: {} entries'.format(len(manifest)))
+    else:
+        print('asset-manifest.json not found — building manifest from dist dirs')
+        all_bundles = {}
+        dist_js = '${_ASSETS_DIR}/frappe/dist/js'
+        dist_css = '${_ASSETS_DIR}/frappe/dist/css'
+        if os.path.exists(dist_js):
+            for f in os.listdir(dist_js):
+                if f.endswith('.js'):
+                    parts = f.split('.')
+                    if len(parts) >= 3:
+                        bundle_name = '.'.join(parts[:-2]) + '.js'
+                        all_bundles[bundle_name] = '/assets/frappe/dist/js/' + f
+        if os.path.exists(dist_css):
+            for f in os.listdir(dist_css):
+                if f.endswith('.css'):
+                    parts = f.split('.')
+                    if len(parts) >= 3:
+                        bundle_name = '.'.join(parts[:-2]) + '.css'
+                        all_bundles[bundle_name] = '/assets/frappe/dist/css/' + f
+        if all_bundles:
+            frappe.cache().set_value('assets_json', json.dumps(all_bundles))
+            print('built manifest from dist dirs: {} entries'.format(len(all_bundles)))
+        else:
+            print('WARNING: no bundles found to warm')
+except Exception as e:
+    import traceback
+    print('manifest warm error: {}'.format(e))
+    traceback.print_exc()
+finally:
+    frappe.destroy()
+PYEOF
+
+echo 'asset manifest warm complete'
 "
 }
 
 _restart_lms_app_with_diagnostics() {
-  run_remote_heredoc "Restart and verify ${_SERVICE_NAME}" "
+  run_remote_heredoc "Restart ${_SERVICE_NAME}" "
 set +u
 systemctl reset-failed ${_SERVICE_NAME} 2>/dev/null || true
 systemctl restart ${_SERVICE_NAME}
 
-echo 'Waiting up to 30s for ${_SERVICE_NAME} to reach active state...'
 waited=0
 i=0
 while [[ \${i} -lt 10 ]]; do
   i=\$(( i + 1 ))
   state=\$(systemctl is-active ${_SERVICE_NAME} 2>/dev/null || echo unknown)
   if [[ \"\${state}\" == 'active' ]]; then
-    echo \"lms-app: active after \${waited}s\"
+    echo \"${_SERVICE_NAME}: active after \${waited}s\"
     break
   fi
   if [[ \"\${state}\" == 'failed' ]]; then
@@ -406,33 +558,28 @@ while [[ \${i} -lt 10 ]]; do
     sleep 3
     systemctl start ${_SERVICE_NAME} 2>/dev/null || true
   fi
-  echo \"lms-app: \${state} [\${i}/10]\"
+  echo \"${_SERVICE_NAME}: \${state} [\${i}/10]\"
   sleep 3
   waited=\$(( waited + 3 ))
 done
 
-echo 'Waiting 15s grace period to detect post-start crashes...'
 sleep 15
-
 final=\$(systemctl is-active ${_SERVICE_NAME} 2>/dev/null || echo unknown)
-echo \"lms-app final state: \${final}\"
-systemctl status ${_SERVICE_NAME} --no-pager -l || true
-echo '--- Last 80 journal lines ---'
-journalctl -u ${_SERVICE_NAME} -n 80 --no-pager 2>/dev/null || true
+echo \"${_SERVICE_NAME} final: \${final}\"
+systemctl status ${_SERVICE_NAME} --no-pager -l 2>/dev/null || true
+journalctl -u ${_SERVICE_NAME} -n 40 --no-pager 2>/dev/null || true
 "
 }
 
 _ensure_tls_cert() {
-  run_remote_heredoc "Ensure TLS certificate exists [${_BENCH_ID}]" "
+  run_remote_heredoc "Ensure TLS certificate [${_BENCH_ID}]" "
 set +e
 mkdir -p /etc/ssl/lms
 chmod 700 /etc/ssl/lms
-
 if [[ -f '${LMS_TLS_CERT}' && -f '${LMS_TLS_KEY}' ]]; then
-  echo 'Existing TLS cert/key found — skipping generation'
+  echo 'existing TLS cert found'
   openssl x509 -in '${LMS_TLS_CERT}' -noout -dates 2>/dev/null || true
 else
-  echo 'Generating self-signed certificate for ${LMS_DOMAIN_NAME:-${LMS_SERVER_HOST}}'
   openssl req -x509 -nodes -days 3650 -newkey rsa:4096 \
     -keyout '${LMS_TLS_KEY}' \
     -out '${LMS_TLS_CERT}' \
@@ -441,15 +588,14 @@ else
     2>/dev/null
   chmod 600 '${LMS_TLS_KEY}'
   chmod 644 '${LMS_TLS_CERT}'
-  echo 'Self-signed TLS cert generated (valid 10 years)'
+  echo 'self-signed TLS cert generated'
 fi
 "
 }
 
 _build_nginx_conf() {
-  local listen_http
+  local listen_http server_name
   listen_http="$(_nginx_http_listen)"
-  local server_name
   server_name="$(_nginx_server_name)"
 
   if $LMS_ENABLE_HTTPS; then
@@ -477,7 +623,7 @@ server {
     add_header X-Content-Type-Options nosniff always;
 
     location /assets {
-        alias ${LMS_FRAPPE_BENCH_DIR}/sites/assets;
+        alias ${_ASSETS_DIR};
         try_files \$uri \$uri/ =404;
         expires 1d;
         add_header Cache-Control 'public';
@@ -493,7 +639,7 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
-        proxy_set_header Host ${LMS_FRAPPE_SITE};
+        proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
@@ -501,7 +647,7 @@ server {
 
     location / {
         proxy_pass http://127.0.0.1:${LMS_GUNICORN_PORT};
-        proxy_set_header Host ${LMS_FRAPPE_SITE};
+        proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
@@ -526,7 +672,7 @@ server {
     add_header X-Content-Type-Options nosniff always;
 
     location /assets {
-        alias ${LMS_FRAPPE_BENCH_DIR}/sites/assets;
+        alias ${_ASSETS_DIR};
         try_files \$uri \$uri/ =404;
         expires 1d;
         add_header Cache-Control 'public';
@@ -542,7 +688,7 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
-        proxy_set_header Host ${LMS_FRAPPE_SITE};
+        proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
@@ -550,7 +696,7 @@ server {
 
     location / {
         proxy_pass http://127.0.0.1:${LMS_GUNICORN_PORT};
-        proxy_set_header Host ${LMS_FRAPPE_SITE};
+        proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
@@ -567,311 +713,8 @@ NGINXCFG
   fi
 }
 
-do_stop() {
-  header "Stop LMS [${_BENCH_ID}]"
-  _deploy_log "Action: stop"
-  run_remote_heredoc "Stop bench supervisor processes [${_BENCH_ID}]" "
-set +e
-supervisorctl stop '${_SUPERVISOR_CONF_NAME}-web:' 2>/dev/null || true
-supervisorctl stop '${_SUPERVISOR_CONF_NAME}-workers:' 2>/dev/null || true
-echo 'bench processes stopped'
-"
-  run_remote_heredoc "Stop lms-app system service [${_BENCH_ID}]" "
-set +e
-systemctl stop ${_SERVICE_NAME} 2>/dev/null || true
-echo 'lms-app stopped'
-"
-  success "LMS stopped [${_BENCH_ID}]"
-  _deploy_log "LMS stopped"
-}
-
-do_restart() {
-  header "Restart LMS [${_BENCH_ID}]"
-  _deploy_log "Action: restart"
-  run_remote_heredoc "Restart bench supervisor processes [${_BENCH_ID}]" "
-set +e
-supervisorctl restart '${_SUPERVISOR_CONF_NAME}-web:' 2>/dev/null || true
-supervisorctl restart '${_SUPERVISOR_CONF_NAME}-workers:' 2>/dev/null || true
-sleep 5
-supervisorctl status 2>/dev/null || true
-"
-  _restart_lms_app_with_diagnostics
-  success "LMS restarted [${_BENCH_ID}]"
-  _deploy_log "LMS restarted"
-}
-
-do_status() {
-  header "LMS Health Check [${_BENCH_ID}]"
-  _deploy_log "Action: status"
-
-  _status_listen_port="$(_nginx_http_listen)"
-  $LMS_ENABLE_HTTPS && _status_listen_port="${LMS_NGINX_HTTPS_PORT}"
-
-  local _podman_ps_fmt='table {{.Names}}\t{{.Status}}\t{{.Image}}'
-  local _enable_https="${LMS_ENABLE_HTTPS}"
-  local _https_port="${LMS_NGINX_HTTPS_PORT}"
-  local _listen_port="${_status_listen_port}"
-
-  run_remote_heredoc "Full LMS status [${_BENCH_ID}]" "
-set +e
-echo '=== Supervisor processes ==='
-supervisorctl status 2>/dev/null | grep -E '${_SUPERVISOR_CONF_NAME}|^\$' || echo 'supervisor not running'
-
-echo ''
-echo '=== System services ==='
-for svc in nginx supervisor; do
-  printf '  %-20s %s\n' \"\${svc}\" \"\$(systemctl is-active \${svc} 2>/dev/null || echo inactive)\"
-done
-
-echo ''
-echo '=== Podman containers [${_BENCH_ID}] ==='
-sudo -u ${LMS_SERVICE_OWNER} podman ps \
-  --format '${_podman_ps_fmt}' 2>/dev/null \
-  | grep -E '${_BENCH_ID}|^NAMES' || echo 'no matching containers found'
-
-echo ''
-echo '=== Redis [${_BENCH_ID}] ==='
-redis-cli -h 127.0.0.1 -p ${LMS_REDIS_CACHE_PORT} ping 2>/dev/null | grep -q PONG \
-  && echo 'redis-cache (${LMS_REDIS_CACHE_PORT}): OK' \
-  || echo 'redis-cache (${LMS_REDIS_CACHE_PORT}): NOT RESPONDING'
-redis-cli -h 127.0.0.1 -p ${LMS_REDIS_QUEUE_PORT} ping 2>/dev/null | grep -q PONG \
-  && echo 'redis-queue (${LMS_REDIS_QUEUE_PORT}): OK' \
-  || echo 'redis-queue (${LMS_REDIS_QUEUE_PORT}): NOT RESPONDING'
-
-echo ''
-echo '=== Postgres [${_BENCH_ID}] ==='
-psql -h ${LMS_PG_HOST} -p ${LMS_PG_PORT} -U postgres \
-  -c 'SELECT 1' >/dev/null 2>&1 \
-  && echo 'postgres (${LMS_PG_HOST}:${LMS_PG_PORT}): OK' \
-  || echo 'postgres (${LMS_PG_HOST}:${LMS_PG_PORT}): NOT RESPONDING'
-
-echo ''
-echo '=== Site DB user connectivity ==='
-if [[ -f '${_SITE_DIR}/site_config.json' ]]; then
-  _db_name=\$(python3 -c \"import json; c=json.load(open('${_SITE_DIR}/site_config.json')); print(c.get('db_name',''))\" 2>/dev/null || true)
-  _db_pass=\$(python3 -c \"import json; c=json.load(open('${_SITE_DIR}/site_config.json')); print(c.get('db_password',''))\" 2>/dev/null || true)
-  PGPASSWORD=\"\${_db_pass}\" psql -h ${LMS_PG_HOST} -p ${LMS_PG_PORT} \
-    -U \"\${_db_name}\" -d \"\${_db_name}\" -c 'SELECT 1' >/dev/null 2>&1 \
-    && echo \"site DB user (\${_db_name}): OK\" \
-    || echo \"site DB user (\${_db_name}): FAILED — run --update-config to fix\"
-fi
-
-echo ''
-echo '=== Frappe gunicorn HTTP [${_BENCH_ID}] ==='
-curl -sf --max-time 10 \
-  -H 'Host: ${LMS_FRAPPE_SITE}' \
-  -H 'X-Frappe-Site-Name: ${LMS_FRAPPE_SITE}' \
-  http://127.0.0.1:${LMS_GUNICORN_PORT} -o /dev/null \
-  && echo 'gunicorn HTTP (${LMS_GUNICORN_PORT}): OK' \
-  || echo 'gunicorn HTTP (${LMS_GUNICORN_PORT}): not responding'
-
-echo ''
-echo '=== External endpoint [${_BENCH_ID}] ==='
-if ${_enable_https}; then
-  curl -sf -k --max-time 10 https://127.0.0.1:${_https_port} -o /dev/null \
-    && echo 'HTTPS endpoint (${_https_port}): OK' \
-    || echo 'HTTPS endpoint (${_https_port}): not responding'
-else
-  curl -sf --max-time 10 http://127.0.0.1:${_listen_port} -o /dev/null \
-    && echo 'HTTP endpoint (${_listen_port}): OK' \
-    || echo 'HTTP endpoint (${_listen_port}): not responding'
-fi
-
-echo ''
-echo '=== lms-app service [${_BENCH_ID}] ==='
-systemctl status ${_SERVICE_NAME} --no-pager -l 2>/dev/null || echo 'lms-app service not found or not running'
-
-echo ''
-echo '=== Disk ==='
-df -h /
-"
-}
-
-do_clean_services() {
-  header "Clean: supervisor, containers, and volumes for bench ${_BENCH_ID}"
-  _deploy_log "Action: clean-services"
-
-  run_remote_heredoc "Stop and remove supervisor config for bench ${_BENCH_ID}" "
-set +e
-supervisorctl stop '${_SUPERVISOR_CONF_NAME}-web:' 2>/dev/null || true
-supervisorctl stop '${_SUPERVISOR_CONF_NAME}-workers:' 2>/dev/null || true
-_conf='/etc/supervisor/conf.d/${_SUPERVISOR_CONF_NAME}.conf'
-if [[ -f \"\${_conf}\" ]]; then
-  rm -f \"\${_conf}\"
-  supervisorctl reread 2>/dev/null || true
-  supervisorctl update 2>/dev/null || true
-  echo \"Removed supervisor config: ${_SUPERVISOR_CONF_NAME}\"
-else
-  echo 'No supervisor config found for: ${_SUPERVISOR_CONF_NAME}'
-fi
-"
-
-  local _vol_fmt='{{.Name}}'
-
-  run_remote_as_owner "Stop and remove containers, volumes, and systemd units for bench ${_BENCH_ID}" "
-set +e
-
-systemctl stop ${_SERVICE_NAME} 2>/dev/null || true
-systemctl disable ${_SERVICE_NAME} 2>/dev/null || true
-rm -f ${_SYSTEMD_UNIT} 2>/dev/null || true
-rm -f ${_WRAPPER_SCRIPT} 2>/dev/null || true
-systemctl daemon-reload 2>/dev/null || true
-
-for container in \
-  ${LMS_POSTGRES_CONTAINER} \
-  ${LMS_REDIS_CACHE_CONTAINER} \
-  ${LMS_REDIS_QUEUE_CONTAINER}; do
-  podman stop \"\${container}\" 2>/dev/null || true
-  podman rm -f \"\${container}\" 2>/dev/null || true
-  echo \"Removed container: \${container}\"
-done
-
-for vol in \$(podman volume ls --format '${_vol_fmt}' 2>/dev/null | grep -E '^lms-${_BENCH_ID}' || true); do
-  podman volume rm -f \"\${vol}\" 2>/dev/null || true
-  echo \"Removed volume: \${vol}\"
-done
-
-echo 'Container, volume, and service cleanup complete for bench ${_BENCH_ID}'
-"
-  success "Supervisor, containers, and volumes cleaned for bench ${_BENCH_ID}"
-  _deploy_log "clean-services complete"
-}
-
-do_clean_bench() {
-  header "Deep clean: bench ${_BENCH_ID}"
-  _deploy_log "Action: deep bench clean"
-
-  warn "This will permanently remove:"
-  warn "  Bench dir:   ${LMS_FRAPPE_BENCH_DIR}"
-  warn "  Site DB:     ${LMS_FRAPPE_SITE} (postgres port ${LMS_PG_PORT})"
-  warn "  Supervisor:  ${_SUPERVISOR_CONF_NAME}.conf"
-  warn "  Nginx conf:  ${_NGINX_CONF_NAME}.conf"
-  warn "  Systemd:     ${_SERVICE_NAME}"
-  warn "  Containers:  ${LMS_POSTGRES_CONTAINER}, ${LMS_REDIS_CACHE_CONTAINER}, ${LMS_REDIS_QUEUE_CONTAINER}"
-  warn "  Volumes:     all podman volumes prefixed lms-${_BENCH_ID}"
-
-  if ! $LMS_FORCE; then
-    if [[ ! -t 0 ]]; then
-      die "Deep clean requires --force or an interactive terminal."
-    fi
-    read -rp "  Confirm deep wipe of bench '${_BENCH_ID}'? [y/N] " _confirm
-    [[ "${_confirm,,}" == "y" ]] || { info "Clean cancelled."; return 0; }
-  fi
-
-  run_remote_heredoc "Stop all supervisor processes for bench ${_BENCH_ID}" "
-set +e
-supervisorctl stop '${_SUPERVISOR_CONF_NAME}-web:' 2>/dev/null || true
-supervisorctl stop '${_SUPERVISOR_CONF_NAME}-workers:' 2>/dev/null || true
-
-_conf='/etc/supervisor/conf.d/${_SUPERVISOR_CONF_NAME}.conf'
-[[ -f \"\${_conf}\" ]] && rm -f \"\${_conf}\" && echo \"Removed: \${_conf}\"
-
-supervisorctl reread 2>/dev/null || true
-supervisorctl update 2>/dev/null || true
-
-for _nc in \
-  '/etc/nginx/conf.d/${_NGINX_CONF_NAME}.conf' \
-  '/etc/nginx/sites-enabled/${_NGINX_CONF_NAME}.conf'; do
-  [[ -f \"\${_nc}\" ]] && rm -f \"\${_nc}\" && echo \"Removed nginx conf: \${_nc}\"
-done
-nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
-
-_site_db=\$(echo '${LMS_FRAPPE_SITE}' | tr '.' '_' | tr '-' '_')
-psql -h ${LMS_PG_HOST} -p ${LMS_PG_PORT} -U postgres \
-  -c \"DROP DATABASE IF EXISTS \\\"\${_site_db}\\\";\" 2>/dev/null \
-  && echo \"Dropped DB: \${_site_db}\" || echo 'DB drop failed or already gone'
-
-[[ -d '${LMS_FRAPPE_BENCH_DIR}' ]] \
-  && rm -rf '${LMS_FRAPPE_BENCH_DIR}' \
-  && echo 'Removed bench dir: ${LMS_FRAPPE_BENCH_DIR}'
-
-df -h /
-echo 'Bench deep wipe complete.'
-"
-
-  local _vol_fmt='{{.Name}}'
-
-  run_remote_as_owner "Stop, disable, and remove all containers, volumes, and user units for bench ${_BENCH_ID}" "
-set +e
-
-systemctl stop ${_SERVICE_NAME} 2>/dev/null || true
-systemctl disable ${_SERVICE_NAME} 2>/dev/null || true
-rm -f ${_SYSTEMD_UNIT} 2>/dev/null || true
-rm -f ${_WRAPPER_SCRIPT} 2>/dev/null || true
-systemctl daemon-reload 2>/dev/null || true
-
-for container in \
-  ${LMS_POSTGRES_CONTAINER} \
-  ${LMS_REDIS_CACHE_CONTAINER} \
-  ${LMS_REDIS_QUEUE_CONTAINER}; do
-  podman stop \"\${container}\" 2>/dev/null || true
-  podman rm -f \"\${container}\" 2>/dev/null || true
-  echo \"Removed container: \${container}\"
-done
-
-for vol in \$(podman volume ls --format '${_vol_fmt}' 2>/dev/null | grep -E '^lms-${_BENCH_ID}' || true); do
-  podman volume rm -f \"\${vol}\" 2>/dev/null || true
-  echo \"Removed volume: \${vol}\"
-done
-
-echo 'Container and volume cleanup complete.'
-"
-  _deploy_log "Deep clean complete"
-}
-
-do_update() {
-  header "Update: pull + migrate + restart [${_BENCH_ID}]"
-  _deploy_log "Action: update"
-
-  if ! $LMS_DRY_RUN; then
-    _bench_ok=$(ssh ${SSH_BASE_OPTS} "$TARGET" \
-      "test -d '${LMS_FRAPPE_BENCH_DIR}/apps/tap_lms' && echo yes || echo no" 2>/dev/null || echo no)
-    if [[ "$_bench_ok" != "yes" ]]; then
-      warn "Bench or tap_lms app not found — falling back to full deploy"
-      _deploy_log "Update: bench missing, running full deploy"
-      LMS_UPDATE_ONLY=false
-      return 0
-    fi
-  fi
-
-  run_remote_as_frappe "git pull + migrate + build [${_BENCH_ID}]" "
-cd ${LMS_FRAPPE_BENCH_DIR}/apps/tap_lms
-git remote get-url origin >/dev/null 2>&1 || git remote add origin ${LMS_GIT_REPO}
-git remote set-url origin ${LMS_GIT_REPO}
-git fetch --all --prune
-git checkout ${LMS_GIT_BRANCH} 2>/dev/null \
-  || git checkout -b ${LMS_GIT_BRANCH} origin/${LMS_GIT_BRANCH}
-git reset --hard origin/${LMS_GIT_BRANCH}
-echo \"HEAD: \$(git log --oneline -1)\"
-cd ${LMS_FRAPPE_BENCH_DIR}
-bench --site ${LMS_FRAPPE_SITE} migrate
-bench build --app tap_lms --force
-"
-  run_remote_heredoc "Restart bench supervisor processes after update [${_BENCH_ID}]" "
-set +e
-supervisorctl restart '${_SUPERVISOR_CONF_NAME}-web:' 2>/dev/null || true
-supervisorctl restart '${_SUPERVISOR_CONF_NAME}-workers:' 2>/dev/null || true
-sleep 5
-supervisorctl status 2>/dev/null || true
-"
-  _restart_lms_app_with_diagnostics
-  success "Update complete [${_BENCH_ID}]"
-  _deploy_log "Update complete"
-}
-
-do_update_config() {
-  header "Update config: site config + DB settings [${_BENCH_ID}]"
-  _deploy_log "Action: update-config"
-
-  if ! $LMS_DRY_RUN; then
-    _bench_ok=$(ssh ${SSH_BASE_OPTS} "$TARGET" \
-      "test -d '${LMS_FRAPPE_BENCH_DIR}/apps/tap_lms' && echo yes || echo no" 2>/dev/null || echo no)
-    if [[ "$_bench_ok" != "yes" ]]; then
-      die "Bench not found at ${LMS_FRAPPE_BENCH_DIR} — run a full deploy first."
-    fi
-  fi
-
-  run_remote_as_frappe "Update common_site_config and bench site config [${_BENCH_ID}]" "
+_write_common_site_config() {
+  run_remote_as_frappe "Write common_site_config.json [${_BENCH_ID}]" "
 cd ${LMS_FRAPPE_BENCH_DIR}
 cat > ${_SITES_DIR}/common_site_config.json <<SITECFG
 {
@@ -893,26 +736,346 @@ cat > ${_SITES_DIR}/common_site_config.json <<SITECFG
   \"db_port\": ${LMS_PG_PORT}
 }
 SITECFG
-echo 'common_site_config.json updated'
+echo 'common_site_config.json written'
+"
+}
 
+_get_app_or_update() {
+  local app_name="$1" repo="$2" branch="$3"
+  run_remote_as_frappe "Get or update ${app_name} [${_BENCH_ID}]" "
+cd ${LMS_FRAPPE_BENCH_DIR}
+if [[ -d apps/${app_name} ]]; then
+  cd apps/${app_name}
+  git remote set-url origin ${repo} 2>/dev/null || git remote add origin ${repo}
+  git fetch --all --prune
+  git checkout ${branch} 2>/dev/null || git checkout -b ${branch} origin/${branch}
+  git reset --hard origin/${branch}
+  echo \"HEAD: \$(git log --oneline -1)\"
+  cd ${LMS_FRAPPE_BENCH_DIR}
+else
+  bench get-app ${repo} --branch ${branch}
+fi
+"
+}
+
+_install_app_if_needed() {
+  local app_name="$1"
+  run_remote_as_frappe "Install ${app_name} if needed [${_BENCH_ID}]" "
+cd ${LMS_FRAPPE_BENCH_DIR}
+_installed=\$(bench --site ${LMS_FRAPPE_SITE} list-apps 2>/dev/null | grep -c '^${app_name}\$' || true)
+if [[ \${_installed} -gt 0 ]]; then
+  echo '${app_name} already installed'
+else
+  bench --site ${LMS_FRAPPE_SITE} install-app ${app_name}
+fi
+"
+}
+
+do_stop() {
+  header "Stop LMS [${_BENCH_ID}]"
+  _deploy_log "Action: stop"
+  run_remote_heredoc "Stop LMS services [${_BENCH_ID}]" "
+set +e
+supervisorctl stop '${_SUPERVISOR_CONF_NAME}-web:' 2>/dev/null || true
+supervisorctl stop '${_SUPERVISOR_CONF_NAME}-workers:' 2>/dev/null || true
+systemctl stop ${_SERVICE_NAME} 2>/dev/null || true
+echo 'LMS stopped'
+"
+  success "LMS stopped [${_BENCH_ID}]"
+  _deploy_log "LMS stopped"
+}
+
+do_restart() {
+  header "Restart LMS [${_BENCH_ID}]"
+  _deploy_log "Action: restart"
+  _clear_all_caches
+  _warm_asset_manifest
+  run_remote_heredoc "Restart supervisor workers [${_BENCH_ID}]" "
+set +e
+supervisorctl restart '${_SUPERVISOR_CONF_NAME}-workers:' 2>/dev/null || true
+sleep 5
+supervisorctl status 2>/dev/null || true
+"
+  _restart_lms_app_with_diagnostics
+  success "LMS restarted [${_BENCH_ID}]"
+  _deploy_log "LMS restarted"
+}
+
+do_status() {
+  header "LMS Health Check [${_BENCH_ID}]"
+  _deploy_log "Action: status"
+
+  local _status_listen_port
+  _status_listen_port="$(_nginx_http_listen)"
+  $LMS_ENABLE_HTTPS && _status_listen_port="${LMS_NGINX_HTTPS_PORT}"
+
+  run_remote_heredoc "Full LMS status [${_BENCH_ID}]" "
+set +e
+echo '=== Supervisor ==='
+supervisorctl status 2>/dev/null | grep '${_SUPERVISOR_CONF_NAME}' || echo 'no matching supervisor processes'
+
+echo ''
+echo '=== System services ==='
+for svc in nginx supervisor ${_SERVICE_NAME}; do
+  printf '  %-40s %s\n' \"\${svc}\" \"\$(systemctl is-active \${svc} 2>/dev/null || echo inactive)\"
+done
+
+echo ''
+echo '=== Podman containers [${_BENCH_ID}] ==='
+sudo -u ${LMS_SERVICE_OWNER} podman ps \
+  --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}' 2>/dev/null \
+  | grep -E '${_BENCH_ID}|^NAMES' || echo 'no matching containers'
+
+echo ''
+echo '=== Redis [${_BENCH_ID}] ==='
+redis-cli -h 127.0.0.1 -p ${LMS_REDIS_CACHE_PORT} ping 2>/dev/null | grep -q PONG \
+  && echo 'redis-cache (${LMS_REDIS_CACHE_PORT}): OK' \
+  || echo 'redis-cache (${LMS_REDIS_CACHE_PORT}): NOT RESPONDING'
+redis-cli -h 127.0.0.1 -p ${LMS_REDIS_QUEUE_PORT} ping 2>/dev/null | grep -q PONG \
+  && echo 'redis-queue (${LMS_REDIS_QUEUE_PORT}): OK' \
+  || echo 'redis-queue (${LMS_REDIS_QUEUE_PORT}): NOT RESPONDING'
+
+echo ''
+echo '=== Postgres [${_BENCH_ID}] ==='
+psql -h ${LMS_PG_HOST} -p ${LMS_PG_PORT} -U postgres -c 'SELECT 1' >/dev/null 2>&1 \
+  && echo 'postgres (${LMS_PG_HOST}:${LMS_PG_PORT}): OK' \
+  || echo 'postgres (${LMS_PG_HOST}:${LMS_PG_PORT}): NOT RESPONDING'
+
+echo ''
+echo '=== Site DB [${_BENCH_ID}] ==='
+if [[ -f '${_SITE_DIR}/site_config.json' ]]; then
+  _db_name=\$(python3 -c \"import json; c=json.load(open('${_SITE_DIR}/site_config.json')); print(c.get('db_name',''))\" 2>/dev/null || true)
+  _db_pass=\$(python3 -c \"import json; c=json.load(open('${_SITE_DIR}/site_config.json')); print(c.get('db_password',''))\" 2>/dev/null || true)
+  PGPASSWORD=\"\${_db_pass}\" psql -h ${LMS_PG_HOST} -p ${LMS_PG_PORT} \
+    -U \"\${_db_name}\" -d \"\${_db_name}\" -c 'SELECT 1' >/dev/null 2>&1 \
+    && echo \"site DB (\${_db_name}): OK\" \
+    || echo \"site DB (\${_db_name}): FAILED\"
+fi
+
+echo ''
+echo '=== Asset manifest in Redis [${_BENCH_ID}] ==='
+_manifest=\$(redis-cli -h 127.0.0.1 -p ${LMS_REDIS_CACHE_PORT} GET 'assets_json' 2>/dev/null || true)
+if [[ -n \"\${_manifest}\" && \"\${_manifest}\" != 'nil' ]]; then
+  echo 'assets_json key in Redis: present'
+else
+  echo 'assets_json key in Redis: MISSING (bundled_assets will be None in gunicorn)'
+fi
+
+echo ''
+echo '=== Assets [${_BENCH_ID}] ==='
+for _app in ${_FRAPPE_APPS}; do
+  _dir='${_ASSETS_DIR}/'\"\${_app}\"/dist/js
+  if [[ -d \"\${_dir}\" ]] && [[ -n \"\$(ls \"\${_dir}\"/*.js 2>/dev/null)\" ]]; then
+    echo \"assets (\${_app}): OK (\$(ls \"\${_dir}\" | wc -l) js files)\"
+  else
+    echo \"assets (\${_app}): no dist/js (bundle-less app or not built)\"
+  fi
+done
+
+echo ''
+echo '=== Gunicorn [${_BENCH_ID}] ==='
+curl -sf --max-time 10 \
+  -H 'X-Frappe-Site-Name: ${LMS_FRAPPE_SITE}' \
+  http://127.0.0.1:${LMS_GUNICORN_PORT} -o /dev/null \
+  && echo 'gunicorn (${LMS_GUNICORN_PORT}): OK' \
+  || echo 'gunicorn (${LMS_GUNICORN_PORT}): not responding'
+
+echo ''
+echo '=== Endpoint [${_BENCH_ID}] ==='
+if ${LMS_ENABLE_HTTPS}; then
+  curl -sf -k --max-time 10 https://127.0.0.1:${LMS_NGINX_HTTPS_PORT} -o /dev/null \
+    && echo 'HTTPS (${LMS_NGINX_HTTPS_PORT}): OK' \
+    || echo 'HTTPS (${LMS_NGINX_HTTPS_PORT}): not responding'
+else
+  curl -sf --max-time 10 http://127.0.0.1:${_status_listen_port} -o /dev/null \
+    && echo 'HTTP (${_status_listen_port}): OK' \
+    || echo 'HTTP (${_status_listen_port}): not responding'
+fi
+
+echo ''
+echo '=== lms-app service ==='
+systemctl status ${_SERVICE_NAME} --no-pager -l 2>/dev/null || echo 'service not found'
+
+echo ''
+echo '=== Disk ==='
+df -h /
+"
+}
+
+do_clean_services() {
+  header "Clean services [${_BENCH_ID}]"
+  _deploy_log "Action: clean-services"
+
+  run_remote_heredoc "Stop and remove supervisor config [${_BENCH_ID}]" "
+set +e
+supervisorctl stop '${_SUPERVISOR_CONF_NAME}-web:' 2>/dev/null || true
+supervisorctl stop '${_SUPERVISOR_CONF_NAME}-workers:' 2>/dev/null || true
+_conf='/etc/supervisor/conf.d/${_SUPERVISOR_CONF_NAME}.conf'
+if [[ -f \"\${_conf}\" ]]; then
+  rm -f \"\${_conf}\"
+  supervisorctl reread 2>/dev/null || true
+  supervisorctl update 2>/dev/null || true
+  echo \"removed: ${_SUPERVISOR_CONF_NAME}\"
+fi
+"
+
+  run_remote_as_owner "Remove containers, volumes, systemd units [${_BENCH_ID}]" "
+set +e
+systemctl stop ${_SERVICE_NAME} 2>/dev/null || true
+systemctl disable ${_SERVICE_NAME} 2>/dev/null || true
+rm -f ${_SYSTEMD_UNIT} 2>/dev/null || true
+systemctl daemon-reload 2>/dev/null || true
+
+for container in ${LMS_POSTGRES_CONTAINER} ${LMS_REDIS_CACHE_CONTAINER} ${LMS_REDIS_QUEUE_CONTAINER}; do
+  podman stop \"\${container}\" 2>/dev/null || true
+  podman rm -f \"\${container}\" 2>/dev/null || true
+  echo \"removed container: \${container}\"
+done
+
+for vol in \$(podman volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^lms-${_BENCH_ID}' || true); do
+  podman volume rm -f \"\${vol}\" 2>/dev/null || true
+  echo \"removed volume: \${vol}\"
+done
+echo 'services clean complete'
+"
+  success "Services cleaned [${_BENCH_ID}]"
+  _deploy_log "clean-services complete"
+}
+
+do_clean_bench() {
+  header "Deep clean bench [${_BENCH_ID}]"
+  _deploy_log "Action: deep bench clean"
+
+  warn "This will permanently remove:"
+  warn "  Bench dir:  ${LMS_FRAPPE_BENCH_DIR}"
+  warn "  Site DB:    ${LMS_FRAPPE_SITE}"
+  warn "  Supervisor: ${_SUPERVISOR_CONF_NAME}.conf"
+  warn "  Nginx:      ${_NGINX_CONF_NAME}.conf"
+  warn "  Systemd:    ${_SERVICE_NAME}"
+  warn "  Containers: ${LMS_POSTGRES_CONTAINER}, ${LMS_REDIS_CACHE_CONTAINER}, ${LMS_REDIS_QUEUE_CONTAINER}"
+
+  if ! $LMS_FORCE; then
+    [[ -t 0 ]] || die "Deep clean requires --force or an interactive terminal."
+    read -rp "  Confirm deep wipe of bench '${_BENCH_ID}'? [y/N] " _confirm
+    [[ "${_confirm,,}" == "y" ]] || { info "Clean cancelled."; return 0; }
+  fi
+
+  run_remote_heredoc "Deep wipe bench [${_BENCH_ID}]" "
+set +e
+supervisorctl stop '${_SUPERVISOR_CONF_NAME}-web:' 2>/dev/null || true
+supervisorctl stop '${_SUPERVISOR_CONF_NAME}-workers:' 2>/dev/null || true
+
+rm -f '/etc/supervisor/conf.d/${_SUPERVISOR_CONF_NAME}.conf' 2>/dev/null || true
+supervisorctl reread 2>/dev/null || true
+supervisorctl update 2>/dev/null || true
+
+rm -f '/etc/nginx/conf.d/${_NGINX_CONF_NAME}.conf' 2>/dev/null || true
+rm -f '/etc/nginx/sites-enabled/${_NGINX_CONF_NAME}.conf' 2>/dev/null || true
+nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
+
+_site_db=\$(echo '${LMS_FRAPPE_SITE}' | tr '.' '_' | tr '-' '_')
+psql -h ${LMS_PG_HOST} -p ${LMS_PG_PORT} -U postgres \
+  -c \"DROP DATABASE IF EXISTS \\\"\${_site_db}\\\";\" 2>/dev/null || true
+
+[[ -d '${LMS_FRAPPE_BENCH_DIR}' ]] && rm -rf '${LMS_FRAPPE_BENCH_DIR}' && echo 'bench dir removed'
+df -h /
+echo 'bench wipe complete'
+"
+
+  run_remote_as_owner "Remove containers and volumes [${_BENCH_ID}]" "
+set +e
+systemctl stop ${_SERVICE_NAME} 2>/dev/null || true
+systemctl disable ${_SERVICE_NAME} 2>/dev/null || true
+rm -f ${_SYSTEMD_UNIT} 2>/dev/null || true
+systemctl daemon-reload 2>/dev/null || true
+
+for container in ${LMS_POSTGRES_CONTAINER} ${LMS_REDIS_CACHE_CONTAINER} ${LMS_REDIS_QUEUE_CONTAINER}; do
+  podman stop \"\${container}\" 2>/dev/null || true
+  podman rm -f \"\${container}\" 2>/dev/null || true
+  echo \"removed: \${container}\"
+done
+
+for vol in \$(podman volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^lms-${_BENCH_ID}' || true); do
+  podman volume rm -f \"\${vol}\" 2>/dev/null || true
+  echo \"removed volume: \${vol}\"
+done
+echo 'container cleanup complete'
+"
+  _deploy_log "Deep clean complete"
+}
+
+do_update() {
+  header "Update [${_BENCH_ID}]"
+  _deploy_log "Action: update"
+
+  if ! $LMS_DRY_RUN; then
+    local _bench_ok
+    _bench_ok=$(ssh ${SSH_BASE_OPTS} "$TARGET" \
+      "test -d '${LMS_FRAPPE_BENCH_DIR}/apps/tap_lms' && echo yes || echo no" 2>/dev/null || echo no)
+    if [[ "$_bench_ok" != "yes" ]]; then
+      warn "Bench not found — falling back to full deploy"
+      LMS_UPDATE_ONLY=false
+      return 0
+    fi
+  fi
+
+  _get_app_or_update "tap_lms" "${LMS_GIT_REPO}" "${LMS_GIT_BRANCH}"
+
+  run_remote_as_frappe "bench migrate [${_BENCH_ID}]" "
+cd ${LMS_FRAPPE_BENCH_DIR}
+bench --site ${LMS_FRAPPE_SITE} migrate
+"
+
+  _flush_redis_asset_keys
+  _clear_bench_caches_only
+  _build_and_verify_assets
+  _warm_asset_manifest
+
+  run_remote_heredoc "Restart workers after update [${_BENCH_ID}]" "
+set +e
+supervisorctl restart '${_SUPERVISOR_CONF_NAME}-workers:' 2>/dev/null || true
+sleep 5
+supervisorctl status 2>/dev/null || true
+"
+  _restart_lms_app_with_diagnostics
+  success "Update complete [${_BENCH_ID}]"
+  _deploy_log "Update complete"
+}
+
+do_update_config() {
+  header "Update config [${_BENCH_ID}]"
+  _deploy_log "Action: update-config"
+
+  if ! $LMS_DRY_RUN; then
+    local _bench_ok
+    _bench_ok=$(ssh ${SSH_BASE_OPTS} "$TARGET" \
+      "test -d '${LMS_FRAPPE_BENCH_DIR}/apps/tap_lms' && echo yes || echo no" 2>/dev/null || echo no)
+    [[ "$_bench_ok" == "yes" ]] || die "Bench not found — run a full deploy first."
+  fi
+
+  _write_common_site_config
+
+  run_remote_as_frappe "Update site-specific config [${_BENCH_ID}]" "
+cd ${LMS_FRAPPE_BENCH_DIR}
 bench --site ${LMS_FRAPPE_SITE} set-config db_host '${LMS_PG_HOST}'
 bench --site ${LMS_FRAPPE_SITE} set-config db_port ${LMS_PG_PORT}
 
 if ${LMS_DEPLOY_DOMAIN}; then
-  _host_prefix='http'
-  ${LMS_ENABLE_HTTPS} && _host_prefix='https'
-  bench --site ${LMS_FRAPPE_SITE} set-config host_name \"\${_host_prefix}://${LMS_DOMAIN_NAME}\"
+  _proto='http'
+  ${LMS_ENABLE_HTTPS} && _proto='https'
+  bench --site ${LMS_FRAPPE_SITE} set-config host_name \"\${_proto}://${LMS_DOMAIN_NAME}\"
 else
   bench --site ${LMS_FRAPPE_SITE} set-config host_name 'http://${LMS_SERVER_HOST}:${LMS_WEB_PORT}'
 fi
-echo 'Bench site config updated'
+echo 'site config updated'
 "
 
   _write_pgpass_remote
+  _clear_all_caches
+  _warm_asset_manifest
 
-  run_remote_heredoc "Restart bench supervisor processes [${_BENCH_ID}]" "
+  run_remote_heredoc "Restart workers [${_BENCH_ID}]" "
 set +e
-supervisorctl restart '${_SUPERVISOR_CONF_NAME}-web:' 2>/dev/null || true
 supervisorctl restart '${_SUPERVISOR_CONF_NAME}-workers:' 2>/dev/null || true
 sleep 5
 supervisorctl status 2>/dev/null || true
@@ -933,9 +1096,34 @@ chmod 600 "$LMS_SSH_KEY_PATH"
 success "SSH key OK"
 
 if ! $LMS_DRY_RUN; then
-  _ssh_master_up
-  ssh ${SSH_BASE_OPTS} "$TARGET" "echo 'SSH OK'" > /dev/null 2>&1 \
-    || die "Cannot connect to ${TARGET} on port ${LMS_SSH_PORT}"
+  info "Testing SSH connection to ${TARGET} on port ${LMS_SSH_PORT}..."
+  _SSH_ATTEMPT=0
+  _SSH_OK=false
+  while [[ $_SSH_ATTEMPT -lt 3 ]]; do
+    _SSH_ATTEMPT=$(( _SSH_ATTEMPT + 1 ))
+    if _ssh_verify; then
+      _SSH_OK=true
+      break
+    fi
+    warn "SSH attempt ${_SSH_ATTEMPT}/3 failed — retrying in 3s..."
+    sleep 3
+  done
+
+  if ! $_SSH_OK; then
+    warn "All 3 SSH attempts failed — attempting to fix known_hosts..."
+    _KNOWN_HOSTS_DIR="/home/${LMS_SERVER_USER}/.ssh"
+    _KNOWN_HOSTS_FILE="${_KNOWN_HOSTS_DIR}/known_hosts"
+    if [[ ! -d "$_KNOWN_HOSTS_DIR" ]]; then
+      sudo mkdir -p "$_KNOWN_HOSTS_DIR"
+      sudo chmod 700 "$_KNOWN_HOSTS_DIR"
+      sudo chown "${LMS_SERVER_USER}:${LMS_SERVER_USER}" "$_KNOWN_HOSTS_DIR"
+    fi
+    sudo -u "${LMS_SERVER_USER}" ssh-keyscan -H -p "${LMS_SSH_PORT}" "${LMS_SERVER_HOST}" >> "$_KNOWN_HOSTS_FILE" 2>/dev/null \
+      || die "ssh-keyscan failed for ${LMS_SERVER_HOST}:${LMS_SSH_PORT}"
+    sudo chmod 600 "$_KNOWN_HOSTS_FILE"
+    sudo chown "${LMS_SERVER_USER}:${LMS_SERVER_USER}" "$_KNOWN_HOSTS_FILE"
+    _ssh_verify || die "Cannot connect to ${TARGET} on port ${LMS_SSH_PORT}. Check host, port, key, and firewall."
+  fi
 fi
 success "SSH connection verified → ${TARGET}"
 _deploy_log "SSH verified → ${TARGET}"
@@ -948,42 +1136,47 @@ $LMS_ENABLE_HTTPS \
 
 $LMS_DRY_RUN && warn "DRY RUN — SSH commands printed, not executed."
 
-if $LMS_STOP_ONLY;     then do_stop;          _deploy_log "=== Session end ==="; exit 0; fi
-if $LMS_RESTART_ONLY;  then do_restart;        _deploy_log "=== Session end ==="; exit 0; fi
-if $LMS_STATUS_ONLY;   then do_status;         _deploy_log "=== Session end ==="; exit 0; fi
-if $LMS_UPDATE_CONFIG; then do_update_config;  _deploy_log "=== Session end ==="; exit 0; fi
+if $LMS_STOP_ONLY;     then do_stop;          _deploy_log "=== Session end ==="; ssh ${SSH_BASE_OPTS} -O exit "$TARGET" 2>/dev/null || true; exit 0; fi
+if $LMS_RESTART_ONLY;  then do_restart;       _deploy_log "=== Session end ==="; ssh ${SSH_BASE_OPTS} -O exit "$TARGET" 2>/dev/null || true; exit 0; fi
+if $LMS_STATUS_ONLY;   then do_status;        _deploy_log "=== Session end ==="; ssh ${SSH_BASE_OPTS} -O exit "$TARGET" 2>/dev/null || true; exit 0; fi
+if $LMS_UPDATE_CONFIG; then do_update_config; _deploy_log "=== Session end ==="; ssh ${SSH_BASE_OPTS} -O exit "$TARGET" 2>/dev/null || true; exit 0; fi
 
 if $LMS_UPDATE_ONLY; then
   do_update
-  if $LMS_UPDATE_ONLY; then _deploy_log "=== Session end ==="; exit 0; fi
-  warn "--update fell back to full deploy because bench was missing"
+  if $LMS_UPDATE_ONLY; then _deploy_log "=== Session end ==="; ssh ${SSH_BASE_OPTS} -O exit "$TARGET" 2>/dev/null || true; exit 0; fi
+  warn "--update fell back to full deploy"
 fi
 
 if $LMS_CLEAN_SERVICES; then
   do_clean_services
-  $LMS_CLEAN_ONLY && { _deploy_log "=== Session end ==="; exit 0; }
+  $LMS_CLEAN_ONLY && { _deploy_log "=== Session end ==="; ssh ${SSH_BASE_OPTS} -O exit "$TARGET" 2>/dev/null || true; exit 0; }
 fi
 
 if $LMS_CLEAN_BENCH || $LMS_CLEAN; then
   do_clean_bench
-  $LMS_CLEAN_ONLY && { _deploy_log "=== Session end ==="; exit 0; }
+  $LMS_CLEAN_ONLY && { _deploy_log "=== Session end ==="; ssh ${SSH_BASE_OPTS} -O exit "$TARGET" 2>/dev/null || true; exit 0; }
 fi
 
 if step_enabled 1; then
-  header "Step 1 — System packages + podman"
-  _deploy_log "Step 1: system packages and podman"
+  header "Step 1 — System packages + podman [${_BENCH_ID}]"
+  _deploy_log "Step 1: system packages"
   run_remote_heredoc "Install system packages and podman" "
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq \
   build-essential curl git vim netcat-openbsd \
-  virtualenv software-properties-common \
-  postgresql-client redis-tools \
+  python3-pip python3-venv virtualenv software-properties-common \
+  postgresql-client redis-tools redis-server \
   supervisor \
   xvfb libfontconfig wkhtmltopdf \
   nginx fail2ban cron npm \
   openssl \
   2>&1 | tail -5
+
+systemctl stop redis-server 2>/dev/null || true
+systemctl disable redis-server 2>/dev/null || true
+systemctl mask redis-server 2>/dev/null || true
+echo 'system redis-server masked'
 
 if ! ${LMS_PYTHON_VERSION} --version &>/dev/null 2>&1; then
   add-apt-repository ppa:deadsnakes/ppa -y 2>/dev/null || true
@@ -1003,46 +1196,47 @@ if ! command -v podman &>/dev/null; then
         | bash -s -- --quiet 2>&1 | tail -5; } || true
   fi
 fi
-
-if ! command -v podman &>/dev/null; then
-  echo 'FATAL: podman could not be installed' >&2
-  exit 1
-fi
+command -v podman &>/dev/null || { echo 'FATAL: podman could not be installed' >&2; exit 1; }
 
 loginctl enable-linger '${LMS_SERVICE_OWNER}' 2>/dev/null || true
-
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 
-pip3 install frappe-bench --break-system-packages -q 2>&1 | tail -2
+if command -v pip3 &>/dev/null; then
+  pip3 install frappe-bench --break-system-packages -q 2>&1 | tail -2
+elif command -v pip &>/dev/null; then
+  pip install frappe-bench --break-system-packages -q 2>&1 | tail -2
+else
+  python3 -m pip install frappe-bench --break-system-packages -q 2>&1 | tail -2
+fi
+
 npm install -g yarn -q 2>&1 | tail -2
 
 echo \"podman: \$(podman --version)\"
 echo \"yarn: \$(yarn --version)\"
-echo \"frappe-bench: \$(bench --version 2>/dev/null || pip3 show frappe-bench 2>/dev/null | grep Version)\"
 echo \"${LMS_PYTHON_VERSION}: \$(${LMS_PYTHON_VERSION} --version)\"
+echo \"redis-server: \$(redis-server --version)\"
 "
-  success "System packages and podman installed"
+  success "System packages installed"
   _deploy_log "Step 1 complete"
 fi
 
 if step_enabled 2; then
-  header "Step 2 — Container units + OS user + Postgres bootstrap [${_BENCH_ID}]"
-  _deploy_log "Step 2: container units, frappe user, postgres"
+  header "Step 2 — Containers + OS user + Postgres [${_BENCH_ID}]"
+  _deploy_log "Step 2: containers and postgres"
 
-  run_remote_as_owner "Start all infrastructure containers [${_BENCH_ID}]" "
+  run_remote_as_owner "Start infrastructure containers [${_BENCH_ID}]" "
 _uid=\$(id -u)
 export XDG_RUNTIME_DIR=/run/user/\${_uid}
 export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\${_uid}/bus
 loginctl enable-linger \$(whoami) 2>/dev/null || true
 
 _start_container() {
-  local name=\"\$1\"
-  local run_args=\"\$2\"
+  local name=\"\$1\" run_args=\"\$2\"
   podman stop \"\${name}\" 2>/dev/null || true
   podman rm -f \"\${name}\" 2>/dev/null || true
   eval podman run -d --name \"\${name}\" --restart=always \${run_args}
-  echo \"Started: \${name}\"
+  echo \"started: \${name}\"
 }
 
 podman pull ${LMS_POSTGRES_IMAGE} 2>/dev/null || true
@@ -1052,53 +1246,28 @@ _start_container '${LMS_POSTGRES_CONTAINER}' \
 podman pull ${LMS_REDIS_IMAGE} 2>/dev/null || true
 _start_container '${LMS_REDIS_CACHE_CONTAINER}' \
   \"-p 127.0.0.1:${LMS_REDIS_CACHE_PORT}:6379 ${LMS_REDIS_IMAGE} redis-server --maxmemory ${LMS_REDIS_MAXMEMORY} --maxmemory-policy ${LMS_REDIS_MAXMEMORY_POLICY}\"
-
 _start_container '${LMS_REDIS_QUEUE_CONTAINER}' \
   \"-p 127.0.0.1:${LMS_REDIS_QUEUE_PORT}:6379 ${LMS_REDIS_IMAGE} redis-server --maxmemory ${LMS_REDIS_MAXMEMORY} --maxmemory-policy ${LMS_REDIS_MAXMEMORY_POLICY}\"
 
-echo 'All containers started with --restart=always'
-
-_wait_postgres_ready() {
-  local host=\"\$1\" port=\"\$2\"
-  echo \"Waiting for postgres to be fully ready on \${host}:\${port}...\"
-  local i=0
-  while [[ \${i} -lt 60 ]]; do
-    i=\$(( i + 1 ))
-    local out
-    out=\$(PGPASSWORD='${LMS_POSTGRES_PASSWORD}' psql \
-      -h \"\${host}\" -p \"\${port}\" -U postgres \
-      -c 'SELECT 1' 2>&1)
-    local rc=\$?
-    if [[ \${rc} -eq 0 ]]; then
-      echo \"postgres: ready after \$(( i * 3 ))s\"
-      return 0
-    fi
-    if echo \"\${out}\" | grep -qE 'starting up|starting|recovery'; then
-      echo \"postgres: initialising [\${i}/60]\"
-    elif echo \"\${out}\" | grep -qE 'refused|no route|timeout|Cannot'; then
-      echo \"postgres: port not open yet [\${i}/60]\"
-    else
-      echo \"postgres: \${out} [\${i}/60]\"
-    fi
-    sleep 3
-  done
-  echo 'FATAL: postgres not ready after 180s' >&2
-  exit 1
-}
+i=0
+while [[ \${i} -lt 60 ]]; do
+  i=\$(( i + 1 ))
+  PGPASSWORD='${LMS_POSTGRES_PASSWORD}' psql -h ${LMS_PG_HOST} -p ${LMS_PG_PORT} -U postgres \
+    -c 'SELECT 1' >/dev/null 2>&1 && echo 'postgres: ready' && break
+  sleep 3
+  [[ \${i} -eq 60 ]] && { echo 'FATAL: postgres not ready after 180s' >&2; exit 1; }
+done
 
 _wait_redis() {
-  local port=\"\$1\" label=\"\$2\"
-  echo \"Waiting for \${label} on port \${port}...\"
-  local i=0
+  local port=\"\$1\" label=\"\$2\" i=0
   while [[ \${i} -lt 40 ]]; do
     i=\$(( i + 1 ))
     redis-cli -h 127.0.0.1 -p \"\${port}\" ping 2>/dev/null | grep -q PONG && echo \"\${label}: OK\" && return 0
     sleep 3
   done
-  echo \"FATAL: \${label} not ready after 120s\" >&2; exit 1
+  echo \"FATAL: \${label} not ready\" >&2; exit 1
 }
 
-_wait_postgres_ready ${LMS_PG_HOST} ${LMS_PG_PORT}
 _wait_redis ${LMS_REDIS_CACHE_PORT} 'redis-cache'
 _wait_redis ${LMS_REDIS_QUEUE_PORT} 'redis-queue'
 "
@@ -1106,58 +1275,38 @@ _wait_redis ${LMS_REDIS_QUEUE_PORT} 'redis-queue'
   run_remote_heredoc "Create frappe OS user and configure postgres [${_BENCH_ID}]" "
 set +e
 id ${LMS_FRAPPE_USER} &>/dev/null || useradd -ms /bin/bash ${LMS_FRAPPE_USER}
-
 grep -qxF '${LMS_FRAPPE_USER} ALL=(ALL) NOPASSWD:ALL' /etc/sudoers \
   || echo '${LMS_FRAPPE_USER} ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
-
 chmod 755 /home/${LMS_FRAPPE_USER}
 usermod -a -G ${LMS_FRAPPE_USER} www-data 2>/dev/null || true
-
 mkdir -p /home/${LMS_FRAPPE_USER}/logs
 chown -R ${LMS_FRAPPE_USER}:${LMS_FRAPPE_USER} /home/${LMS_FRAPPE_USER}/logs
-chmod 755 /home/${LMS_FRAPPE_USER}/logs
 
-echo 'Verifying postgres is accepting connections on ${LMS_PG_HOST}:${LMS_PG_PORT}...'
 i=0
 while [[ \${i} -lt 40 ]]; do
   i=\$(( i + 1 ))
-  out=\$(PGPASSWORD='${LMS_POSTGRES_PASSWORD}' psql \
-    -h ${LMS_PG_HOST} -p ${LMS_PG_PORT} -U postgres \
-    -c 'SELECT 1' 2>&1)
-  rc=\$?
-  if [[ \${rc} -eq 0 ]]; then
-    echo 'postgres: OK'
-    break
-  fi
-  echo \"postgres not ready yet [\${i}/40]: \${out}\"
+  PGPASSWORD='${LMS_POSTGRES_PASSWORD}' psql -h ${LMS_PG_HOST} -p ${LMS_PG_PORT} -U postgres \
+    -c 'SELECT 1' >/dev/null 2>&1 && echo 'postgres: OK' && break
   sleep 3
-  if [[ \${i} -eq 40 ]]; then
-    echo 'FATAL: postgres not ready' >&2
-    exit 1
-  fi
+  [[ \${i} -eq 40 ]] && { echo 'FATAL: postgres not ready' >&2; exit 1; }
 done
 
 PGPASSWORD='${LMS_POSTGRES_PASSWORD}' psql -h ${LMS_PG_HOST} -p ${LMS_PG_PORT} -U postgres \
   -c \"ALTER USER postgres WITH SUPERUSER CREATEDB CREATEROLE PASSWORD '${LMS_POSTGRES_PASSWORD}';\"
-
 PGPASSWORD='${LMS_POSTGRES_PASSWORD}' psql -h ${LMS_PG_HOST} -p ${LMS_PG_PORT} -U postgres -d template1 \
   -c 'GRANT ALL ON SCHEMA public TO PUBLIC;'
-
 PGPASSWORD='${LMS_POSTGRES_PASSWORD}' psql -h ${LMS_PG_HOST} -p ${LMS_PG_PORT} -U postgres -d template1 \
   -c 'ALTER SCHEMA public OWNER TO postgres;'
-
-echo 'frappe user and postgres ready'
-id ${LMS_FRAPPE_USER}
+echo 'postgres configured'
 "
 
   _write_pgpass_remote
-
-  success "Containers started, frappe user and postgres configured [${_BENCH_ID}]"
+  success "Containers and postgres ready [${_BENCH_ID}]"
   _deploy_log "Step 2 complete"
 fi
 
 if step_enabled 3; then
-  header "Step 3 — NVM + Node (${LMS_NODE_VERSION}) for ${LMS_FRAPPE_USER}"
+  header "Step 3 — NVM + Node ${LMS_NODE_VERSION}"
   _deploy_log "Step 3: nvm + node"
   run_remote_as_frappe "Install NVM and Node ${LMS_NODE_VERSION}" "
 export NVM_DIR=\"\${HOME}/.nvm\"
@@ -1168,19 +1317,18 @@ source \"\${NVM_DIR}/nvm.sh\"
 nvm install ${LMS_NODE_VERSION}
 nvm use ${LMS_NODE_VERSION}
 nvm alias default ${LMS_NODE_VERSION}
-echo \"node: \$(node --version)\"
-echo \"npm:  \$(npm --version)\"
 npm install -g yarn
+echo \"node: \$(node --version)\"
 echo \"yarn: \$(yarn --version)\"
 "
-  success "NVM and Node ${LMS_NODE_VERSION} ready"
+  success "NVM and Node ready"
   _deploy_log "Step 3 complete"
 fi
 
 if step_enabled 4; then
   header "Step 4 — Frappe bench init [${_BENCH_ID}]"
   _deploy_log "Step 4: bench init"
-  run_remote_as_frappe "bench init ${LMS_FRAPPE_BENCH_DIR}" "
+  run_remote_as_frappe "bench init [${_BENCH_ID}]" "
 if [[ -d ${LMS_FRAPPE_BENCH_DIR} ]]; then
   echo 'bench dir exists — skipping init'
 else
@@ -1192,69 +1340,37 @@ else
     --no-backups
 fi
 
-mkdir -p ${_BENCH_LOGS_DIR}
-mkdir -p ${_SITES_DIR}/logs
-chown -R ${LMS_FRAPPE_USER}:${LMS_FRAPPE_USER} ${_BENCH_LOGS_DIR} 2>/dev/null || true
-chown -R ${LMS_FRAPPE_USER}:${LMS_FRAPPE_USER} ${_SITES_DIR}/logs 2>/dev/null || true
-
-cat > ${_SITES_DIR}/common_site_config.json <<SITECFG
-{
-  \"background_workers\": 1,
-  \"frappe_user\": \"${LMS_FRAPPE_USER}\",
-  \"gunicorn_workers\": 4,
-  \"live_reload\": false,
-  \"redis_cache\": \"redis://127.0.0.1:${LMS_REDIS_CACHE_PORT}\",
-  \"redis_queue\": \"redis://127.0.0.1:${LMS_REDIS_QUEUE_PORT}\",
-  \"redis_socketio\": \"redis://127.0.0.1:${LMS_REDIS_SOCKETIO_PORT}\",
-  \"restart_supervisor_on_update\": false,
-  \"restart_systemd_on_update\": false,
-  \"serve_default_site\": true,
-  \"socketio_port\": ${LMS_SOCKETIO_PORT},
-  \"use_redis_auth\": false,
-  \"webserver_port\": ${LMS_GUNICORN_PORT},
-  \"default_site\": \"${LMS_FRAPPE_SITE}\",
-  \"db_host\": \"${LMS_PG_HOST}\",
-  \"db_port\": ${LMS_PG_PORT}
-}
-SITECFG
-
+mkdir -p ${_BENCH_LOGS_DIR} ${_SITES_DIR}/logs
+chown -R ${LMS_FRAPPE_USER}:${LMS_FRAPPE_USER} ${_BENCH_LOGS_DIR} ${_SITES_DIR}/logs 2>/dev/null || true
 echo 'bench init done'
-ls ${LMS_FRAPPE_BENCH_DIR}/apps/
 "
+  _write_common_site_config
   success "Frappe bench initialised [${_BENCH_ID}]"
   _deploy_log "Step 4 complete"
 fi
 
 if step_enabled 5; then
-  header "Step 5 — Verify infrastructure containers [${_BENCH_ID}]"
+  header "Step 5 — Verify containers [${_BENCH_ID}]"
   _deploy_log "Step 5: verify containers"
 
-  _S5_INSPECT_FMT='{{.State.Status}}'
-
-  run_remote_as_owner "Ensure all infrastructure containers are running [${_BENCH_ID}]" "
+  run_remote_as_owner "Ensure containers running [${_BENCH_ID}]" "
 set +e
-
 _ensure_container() {
   local name=\"\$1\"
   local state
-  state=\$(podman inspect --format '${_S5_INSPECT_FMT}' \"\${name}\" 2>/dev/null || echo 'missing')
+  state=\$(podman inspect --format '{{.State.Status}}' \"\${name}\" 2>/dev/null || echo 'missing')
   if [[ \"\${state}\" != 'running' ]]; then
-    echo \"Starting \${name} (state: \${state})\"
     podman start \"\${name}\" 2>/dev/null || true
     sleep 3
-  else
-    echo \"\${name}: running\"
   fi
+  echo \"\${name}: \$(podman inspect --format '{{.State.Status}}' \"\${name}\" 2>/dev/null || echo missing)\"
 }
-
 _ensure_container '${LMS_POSTGRES_CONTAINER}'
 _ensure_container '${LMS_REDIS_CACHE_CONTAINER}'
 _ensure_container '${LMS_REDIS_QUEUE_CONTAINER}'
 
 _wait_redis() {
-  local port=\"\$1\" label=\"\$2\"
-  echo \"Verifying \${label} on port \${port}...\"
-  local i=0
+  local port=\"\$1\" label=\"\$2\" i=0
   while [[ \${i} -lt 30 ]]; do
     i=\$(( i + 1 ))
     redis-cli -h 127.0.0.1 -p \"\${port}\" ping 2>/dev/null | grep -q PONG && echo \"\${label}: OK\" && return 0
@@ -1262,32 +1378,22 @@ _wait_redis() {
   done
   echo \"FATAL: \${label} not ready\" >&2; exit 1
 }
-
 _wait_redis ${LMS_REDIS_CACHE_PORT} 'redis-cache'
 _wait_redis ${LMS_REDIS_QUEUE_PORT} 'redis-queue'
-echo 'Redis verified'
 "
 
-  run_remote_heredoc "Verify postgres connectivity [${_BENCH_ID}]" "
-echo 'Verifying postgres on ${LMS_PG_HOST}:${LMS_PG_PORT}...'
+  run_remote_heredoc "Verify postgres [${_BENCH_ID}]" "
 i=0
 while [[ \${i} -lt 30 ]]; do
   i=\$(( i + 1 ))
-  out=\$(PGPASSWORD='${LMS_POSTGRES_PASSWORD}' psql \
-    -h ${LMS_PG_HOST} -p ${LMS_PG_PORT} -U postgres \
-    -c 'SELECT 1' 2>&1)
-  rc=\$?
-  if [[ \${rc} -eq 0 ]]; then
-    echo 'postgres: OK'
-    break
-  fi
-  echo \"postgres not ready [\${i}/30]: \${out}\"
+  PGPASSWORD='${LMS_POSTGRES_PASSWORD}' psql -h ${LMS_PG_HOST} -p ${LMS_PG_PORT} -U postgres \
+    -c 'SELECT 1' >/dev/null 2>&1 && echo 'postgres: OK' && break
   sleep 3
-  [[ \${i} -eq 30 ]] && echo 'FATAL: postgres not ready after 90s' >&2 && exit 1
+  [[ \${i} -eq 30 ]] && { echo 'FATAL: postgres not ready' >&2; exit 1; }
 done
-echo 'All infrastructure containers verified'
+echo 'all containers verified'
 "
-  success "Infrastructure containers verified [${_BENCH_ID}]"
+  success "Containers verified [${_BENCH_ID}]"
   _deploy_log "Step 5 complete"
 fi
 
@@ -1295,41 +1401,24 @@ if step_enabled 6; then
   header "Step 6 — Create Frappe site [${_BENCH_ID}]"
   _deploy_log "Step 6: new site"
 
-  run_remote_heredoc "Verify site DB connectivity and wipe stale site if needed [${_BENCH_ID}]" "
+  run_remote_heredoc "Check and clean stale site [${_BENCH_ID}]" "
 set +e
-
 _site_db=\$(echo '${LMS_FRAPPE_SITE}' | tr '.' '_' | tr '-' '_')
 
 if [[ -d '${_SITE_DIR}' ]]; then
-  _db_user=\$(python3 -c \"
-import json, sys
-try:
-    cfg = json.load(open('${_SITE_DIR}/site_config.json'))
-    print(cfg.get('db_name',''))
-except:
-    print('')
-\" 2>/dev/null || true)
-  _db_pass=\$(python3 -c \"
-import json, sys
-try:
-    cfg = json.load(open('${_SITE_DIR}/site_config.json'))
-    print(cfg.get('db_password',''))
-except:
-    print('')
-\" 2>/dev/null || true)
+  _db_user=\$(python3 -c \"import json; cfg=json.load(open('${_SITE_DIR}/site_config.json')); print(cfg.get('db_name',''))\" 2>/dev/null || true)
+  _db_pass=\$(python3 -c \"import json; cfg=json.load(open('${_SITE_DIR}/site_config.json')); print(cfg.get('db_password',''))\" 2>/dev/null || true)
 
   if [[ -n \"\${_db_user}\" ]]; then
-    PGPASSWORD=\"\${_db_pass}\" psql \
-      -h ${LMS_PG_HOST} -p ${LMS_PG_PORT} \
-      -U \"\${_db_user}\" -d \"\${_db_user}\" \
-      -c 'SELECT 1' >/dev/null 2>&1
+    PGPASSWORD=\"\${_db_pass}\" psql -h ${LMS_PG_HOST} -p ${LMS_PG_PORT} \
+      -U \"\${_db_user}\" -d \"\${_db_user}\" -c 'SELECT 1' >/dev/null 2>&1
     _conn_ok=\$?
   else
     _conn_ok=1
   fi
 
   if [[ \${_conn_ok} -ne 0 ]]; then
-    echo 'Site DB unreachable or stale — wiping site dir and dropping DB/role'
+    echo 'stale site detected — wiping and recreating'
     PGPASSWORD='${LMS_POSTGRES_PASSWORD}' psql -h ${LMS_PG_HOST} -p ${LMS_PG_PORT} -U postgres \
       -c \"DROP DATABASE IF EXISTS \\\"\${_db_user}\\\";\" 2>/dev/null || true
     PGPASSWORD='${LMS_POSTGRES_PASSWORD}' psql -h ${LMS_PG_HOST} -p ${LMS_PG_PORT} -U postgres \
@@ -1337,20 +1426,17 @@ except:
     PGPASSWORD='${LMS_POSTGRES_PASSWORD}' psql -h ${LMS_PG_HOST} -p ${LMS_PG_PORT} -U postgres \
       -c \"DROP ROLE IF EXISTS \\\"\${_db_user}\\\";\" 2>/dev/null || true
     rm -rf '${_SITE_DIR}'
-    echo 'Stale site wiped — will recreate'
   else
-    echo 'Site DB connection OK — site is healthy'
+    echo 'site DB OK — skipping wipe'
   fi
-else
-  echo 'No existing site dir found — will create fresh'
 fi
 "
 
-  run_remote_as_frappe "bench new-site ${LMS_FRAPPE_SITE} [${_BENCH_ID}]" "
+  run_remote_as_frappe "bench new-site [${_BENCH_ID}]" "
 cd ${LMS_FRAPPE_BENCH_DIR}
 
 if [[ -d ${_SITE_DIR} ]]; then
-  echo 'site already exists and DB is healthy — skipping new-site'
+  echo 'site exists and healthy — skipping new-site'
 else
   PGPASSWORD='${LMS_POSTGRES_PASSWORD}' \
   bench new-site ${LMS_FRAPPE_SITE} \
@@ -1368,26 +1454,21 @@ bench --site ${LMS_FRAPPE_SITE} set-config db_port ${LMS_PG_PORT}
 bench --site ${LMS_FRAPPE_SITE} set-config server_script_enabled true
 bench --site ${LMS_FRAPPE_SITE} set-config serve_default_site true
 
-_host_proto='http'
-${LMS_ENABLE_HTTPS} && _host_proto='https'
-
+_proto='http'
+${LMS_ENABLE_HTTPS} && _proto='https'
 if ${LMS_DEPLOY_DOMAIN}; then
-  bench --site ${LMS_FRAPPE_SITE} set-config host_name \"\${_host_proto}://${LMS_DOMAIN_NAME}\"
+  bench --site ${LMS_FRAPPE_SITE} set-config host_name \"\${_proto}://${LMS_DOMAIN_NAME}\"
 else
   bench --site ${LMS_FRAPPE_SITE} set-config host_name 'http://${LMS_SERVER_HOST}:${LMS_WEB_PORT}'
 fi
 
 echo '${LMS_FRAPPE_SITE}' > ${_SITES_DIR}/currentsite.txt
-
-mkdir -p ${_SITE_LOGS_DIR}
-mkdir -p ${_SITE_LOGS_ALT}
-chown -R ${LMS_FRAPPE_USER}:${LMS_FRAPPE_USER} ${_SITE_LOGS_DIR} 2>/dev/null || true
-chown -R ${LMS_FRAPPE_USER}:${LMS_FRAPPE_USER} ${_SITE_LOGS_ALT} 2>/dev/null || true
-
+mkdir -p ${_SITE_LOGS_DIR} ${_SITE_LOGS_ALT}
+chown -R ${LMS_FRAPPE_USER}:${LMS_FRAPPE_USER} ${_SITE_LOGS_DIR} ${_SITE_LOGS_ALT} 2>/dev/null || true
 echo 'site ready'
 "
 
-  run_remote_heredoc "Ensure site DB password and .pgpass [${_BENCH_ID}]" "
+  run_remote_heredoc "Ensure site DB role [${_BENCH_ID}]" "
 set +e
 if [[ -f '${_SITE_DIR}/site_config.json' ]]; then
   _db_name=\$(python3 -c \"import json; c=json.load(open('${_SITE_DIR}/site_config.json')); print(c.get('db_name',''))\" 2>/dev/null || true)
@@ -1405,83 +1486,44 @@ END
 \\\$\\\$;
 GRANT ALL PRIVILEGES ON DATABASE \"\${_db_name}\" TO \"\${_db_name}\";
 PGSQL
-    echo \"Postgres role ensured for \${_db_name}\"
+    echo \"role ensured: \${_db_name}\"
   fi
 fi
 "
   _write_pgpass_remote
-
   success "Frappe site ready [${_BENCH_ID}]"
   _deploy_log "Step 6 complete"
 fi
 
 if step_enabled 7; then
-  header "Step 7 — Install tap_lms app [${_BENCH_ID}]"
+  header "Step 7 — Install tap_lms [${_BENCH_ID}]"
   _deploy_log "Step 7: install tap_lms"
-  run_remote_as_frappe "get-app + install-app tap_lms [${_BENCH_ID}]" "
-cd ${LMS_FRAPPE_BENCH_DIR}
-
-if [[ -d apps/tap_lms ]]; then
-  echo 'tap_lms present — pulling latest'
-  cd apps/tap_lms
-  git remote set-url origin ${LMS_GIT_REPO} 2>/dev/null || git remote add origin ${LMS_GIT_REPO}
-  git fetch --all --prune
-  git checkout ${LMS_GIT_BRANCH} 2>/dev/null \
-    || git checkout -b ${LMS_GIT_BRANCH} origin/${LMS_GIT_BRANCH}
-  git reset --hard origin/${LMS_GIT_BRANCH}
-  echo \"HEAD: \$(git log --oneline -1)\"
-  cd ${LMS_FRAPPE_BENCH_DIR}
-else
-  bench get-app ${LMS_GIT_REPO} --branch ${LMS_GIT_BRANCH}
-fi
-
-_lms_installed=\$(bench --site ${LMS_FRAPPE_SITE} list-apps 2>/dev/null | grep -c '^tap_lms\$' || true)
-if [[ \${_lms_installed} -gt 0 ]]; then
-  echo 'tap_lms already installed — skipping'
-else
-  bench --site ${LMS_FRAPPE_SITE} install-app tap_lms
-  echo 'tap_lms installed'
-fi
-"
+  _get_app_or_update "tap_lms" "${LMS_GIT_REPO}" "${LMS_GIT_BRANCH}"
+  _install_app_if_needed "tap_lms"
   success "tap_lms installed [${_BENCH_ID}]"
   _deploy_log "Step 7 complete"
 fi
 
 if step_enabled 8; then
   header "Step 8 — Install business_theme_v14 [${_BENCH_ID}]"
-  _deploy_log "Step 8: install business theme"
-  run_remote_as_frappe "get-app + install-app business_theme_v14 [${_BENCH_ID}]" "
-cd ${LMS_FRAPPE_BENCH_DIR}
-
-[[ ! -d apps/business_theme_v14 ]] \
-  && bench get-app ${LMS_BUSINESS_THEME_REPO} --branch ${LMS_BUSINESS_THEME_BRANCH}
-
-_theme_installed=\$(bench --site ${LMS_FRAPPE_SITE} list-apps 2>/dev/null | grep -c '^business_theme_v14\$' || true)
-if [[ \${_theme_installed} -gt 0 ]]; then
-  echo 'business_theme_v14 already installed — skipping'
-else
-  bench --site ${LMS_FRAPPE_SITE} install-app business_theme_v14
-  echo 'business_theme_v14 installed'
-fi
-"
+  _deploy_log "Step 8: business theme"
+  _get_app_or_update "business_theme_v14" "${LMS_BUSINESS_THEME_REPO}" "${LMS_BUSINESS_THEME_BRANCH}"
+  _install_app_if_needed "business_theme_v14"
   success "business_theme_v14 installed [${_BENCH_ID}]"
   _deploy_log "Step 8 complete"
 fi
 
 if step_enabled 9; then
-  header "Step 9 — bench migrate + build + scheduler [${_BENCH_ID}]"
-  _deploy_log "Step 9: migrate, build, scheduler"
-  run_remote_as_frappe "bench migrate + build + scheduler [${_BENCH_ID}]" "
+  header "Step 9 — Migrate + scheduler [${_BENCH_ID}]"
+  _deploy_log "Step 9: migrate and scheduler"
+  run_remote_as_frappe "migrate + scheduler [${_BENCH_ID}]" "
 cd ${LMS_FRAPPE_BENCH_DIR}
 bench --site ${LMS_FRAPPE_SITE} migrate
-bench build --production --force
 bench --site ${LMS_FRAPPE_SITE} enable-scheduler
 bench --site ${LMS_FRAPPE_SITE} set-maintenance-mode off
-bench clear-cache
-bench --site ${LMS_FRAPPE_SITE} clear-website-cache
-echo 'migrate and build done'
+echo 'migrate done'
 "
-  success "Migrations applied and assets built [${_BENCH_ID}]"
+  success "Migrations applied [${_BENCH_ID}]"
   _deploy_log "Step 9 complete"
 fi
 
@@ -1490,10 +1532,7 @@ if step_enabled 10; then
   _deploy_log "Step 10: supervisor and nginx"
 
   _NGINX_CONF_CONTENT="$(_build_nginx_conf)"
-
-  if $LMS_ENABLE_HTTPS; then
-    _ensure_tls_cert
-  fi
+  $LMS_ENABLE_HTTPS && _ensure_tls_cert
 
   run_remote_as_frappe "bench setup supervisor [${_BENCH_ID}]" "
 cd ${LMS_FRAPPE_BENCH_DIR}
@@ -1504,10 +1543,7 @@ echo 'supervisor config generated'
   _NGINX_TMP=$(mktemp)
   printf '%s\n' "${_NGINX_CONF_CONTENT}" > "${_NGINX_TMP}"
   _NGINX_REMOTE_TMP="/tmp/lms-nginx-${_BENCH_ID}-$$.conf"
-
-  if ! $LMS_DRY_RUN; then
-    scp ${SCP_OPTS} "${_NGINX_TMP}" "${TARGET}:${_NGINX_REMOTE_TMP}"
-  fi
+  ! $LMS_DRY_RUN && scp ${SCP_OPTS} "${_NGINX_TMP}" "${TARGET}:${_NGINX_REMOTE_TMP}"
   rm -f "${_NGINX_TMP}"
 
   _PY_STRIP_LOCAL=$(mktemp /tmp/lms-strip-XXXXXX.py)
@@ -1524,51 +1560,40 @@ if not src.exists():
 
 txt = src.read_text()
 
-txt = re.sub(
-    r'\[(?:program|group):[^\]]*redis[^\]]*\][^\[]*',
-    '',
-    txt,
-    flags=re.DOTALL | re.IGNORECASE,
-)
+txt = re.sub(r'\[(?:program|group):[^\]]*redis[^\]]*\][^\[]*', '', txt, flags=re.DOTALL|re.IGNORECASE)
+txt = re.sub(r'(?m)^programs\s*=.*redis.*\n', '', txt, flags=re.IGNORECASE)
+
+txt = re.sub(r'\[program:[^\]]*frappe-web[^\]]*\][^\[]*', '', txt, flags=re.DOTALL|re.IGNORECASE)
+txt = re.sub(r'(?m)^programs\s*=\s*(.*)\n', lambda m: 'programs=' + ','.join(
+    p.strip() for p in m.group(1).split(',')
+    if 'frappe-web' not in p.lower() and 'redis' not in p.lower()
+) + '\n', txt, flags=re.IGNORECASE)
 
 txt = re.sub(r'\[group:[^\]]*-web\]',     '[group:${_SUPERVISOR_CONF_NAME}-web]',     txt)
 txt = re.sub(r'\[group:[^\]]*-workers\]', '[group:${_SUPERVISOR_CONF_NAME}-workers]', txt)
 
-txt = re.sub(r'(?m)^programs\s*=.*redis.*\n', '', txt, flags=re.IGNORECASE)
-
 dst.write_text(txt)
-print(f'Installed supervisor config: {dst}')
-print('Redis sections stripped; web+worker groups renamed.')
+print(f'supervisor config installed: {dst}')
 PYEOF
 
-  if ! $LMS_DRY_RUN; then
-    scp ${SCP_OPTS} "${_PY_STRIP_LOCAL}" "${TARGET}:${_PY_STRIP_REMOTE}"
-  else
-    info "DRY RUN: would scp supervisor strip script to remote"
-  fi
+  ! $LMS_DRY_RUN && scp ${SCP_OPTS} "${_PY_STRIP_LOCAL}" "${TARGET}:${_PY_STRIP_REMOTE}"
+  $LMS_DRY_RUN && info "DRY RUN: would scp supervisor strip script"
   rm -f "${_PY_STRIP_LOCAL}"
 
-  run_remote_heredoc "Install supervisor config and nginx config [${_BENCH_ID}]" "
+  run_remote_heredoc "Install supervisor and nginx configs [${_BENCH_ID}]" "
 set +e
-
 supervisorctl stop 'frappe-bench-web:' 2>/dev/null || true
 supervisorctl stop 'frappe-bench-workers:' 2>/dev/null || true
-
-for _old_conf in /etc/supervisor/conf.d/frappe-bench*.conf; do
-  [[ -f \"\${_old_conf}\" ]] || continue
-  rm -f \"\${_old_conf}\"
-  echo \"Removed legacy config: \${_old_conf}\"
+for _old in /etc/supervisor/conf.d/frappe-bench*.conf; do
+  [[ -f \"\${_old}\" ]] || continue
+  rm -f \"\${_old}\"
+  echo \"removed legacy config: \${_old}\"
 done
-
 supervisorctl reread 2>/dev/null || true
 supervisorctl update 2>/dev/null || true
 
-_src='${LMS_FRAPPE_BENCH_DIR}/config/supervisor.conf'
-
-if [[ -f \"\${_src}\" ]]; then
-  python3 '${_PY_STRIP_REMOTE}'
-  rm -f '${_PY_STRIP_REMOTE}'
-fi
+[[ -f '${LMS_FRAPPE_BENCH_DIR}/config/supervisor.conf' ]] && python3 '${_PY_STRIP_REMOTE}'
+rm -f '${_PY_STRIP_REMOTE}' 2>/dev/null || true
 
 rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
 rm -f /etc/nginx/conf.d/${_NGINX_CONF_NAME}.conf 2>/dev/null || true
@@ -1579,19 +1604,15 @@ if [[ -f '${_NGINX_REMOTE_TMP}' ]]; then
   chown root:root /etc/nginx/conf.d/${_NGINX_CONF_NAME}.conf
   chmod 644 /etc/nginx/conf.d/${_NGINX_CONF_NAME}.conf
 else
-  echo 'WARNING: nginx temp config not found — nginx may not be correctly configured' >&2
+  echo 'WARNING: nginx temp config not found' >&2
 fi
 
-nginx -t \
-  && systemctl reload nginx \
-  && echo 'nginx reloaded OK' \
-  || { echo 'FATAL: nginx config invalid — reverting' >&2; rm -f /etc/nginx/conf.d/${_NGINX_CONF_NAME}.conf; exit 1; }
+nginx -t && systemctl reload nginx && echo 'nginx reloaded OK' \
+  || { rm -f /etc/nginx/conf.d/${_NGINX_CONF_NAME}.conf; echo 'FATAL: nginx config invalid' >&2; exit 1; }
 
 systemctl enable supervisor
 supervisorctl reread 2>&1 || true
 supervisorctl update 2>&1 || true
-
-echo '=== Supervisor status ==='
 supervisorctl status 2>/dev/null || true
 "
   success "Supervisor and Nginx configured [${_BENCH_ID}]"
@@ -1599,7 +1620,7 @@ supervisorctl status 2>/dev/null || true
 fi
 
 if step_enabled 11; then
-  header "Step 11 — Log directories + permissions [${_BENCH_ID}]"
+  header "Step 11 — Log directories [${_BENCH_ID}]"
   _deploy_log "Step 11: log dirs"
   _ensure_all_log_dirs
   success "Log directories ready [${_BENCH_ID}]"
@@ -1635,8 +1656,7 @@ User=${LMS_FRAPPE_USER}
 Group=${LMS_FRAPPE_USER}
 WorkingDirectory=${LMS_FRAPPE_BENCH_DIR}
 Environment=HOME=/home/${LMS_FRAPPE_USER}
-Environment=SITES_PATH=${LMS_FRAPPE_BENCH_DIR}/sites
-Environment=FRAPPE_SITE_NAME_HEADER=${LMS_FRAPPE_SITE}
+Environment=SITES_PATH=${_SITES_DIR}
 Environment=BENCH_PATH=${LMS_FRAPPE_BENCH_DIR}
 ExecStart=${LMS_FRAPPE_BENCH_DIR}/env/bin/gunicorn \
   --chdir ${LMS_FRAPPE_BENCH_DIR} \
@@ -1655,114 +1675,88 @@ UNIT_EOF
     scp ${SCP_OPTS} "${_S12_GUNICORN_CONF_LOCAL}" "${TARGET}:${_S12_GUNICORN_CONF_REMOTE}"
     scp ${SCP_OPTS} "${_S12_UNIT_LOCAL}" "${TARGET}:${_S12_UNIT_REMOTE}"
   else
-    info "DRY RUN: would scp gunicorn conf and unit files to remote"
+    info "DRY RUN: would scp gunicorn conf and unit"
   fi
   rm -f "${_S12_GUNICORN_CONF_LOCAL}" "${_S12_UNIT_LOCAL}"
 
-  run_remote_heredoc "Install gunicorn conf and ${_SERVICE_NAME} systemd unit" "
+  run_remote_heredoc "Install gunicorn conf and systemd unit [${_BENCH_ID}]" "
 mv '${_S12_GUNICORN_CONF_REMOTE}' '${LMS_FRAPPE_BENCH_DIR}/gunicorn.conf.py'
 chown ${LMS_FRAPPE_USER}:${LMS_FRAPPE_USER} '${LMS_FRAPPE_BENCH_DIR}/gunicorn.conf.py'
-
 mv '${_S12_UNIT_REMOTE}' '${_SYSTEMD_UNIT}'
 chown root:root '${_SYSTEMD_UNIT}'
 chmod 644 '${_SYSTEMD_UNIT}'
 systemctl daemon-reload
 systemctl enable ${_SERVICE_NAME}
-echo 'Service unit written: ${_SERVICE_NAME}.service'
+echo 'service unit installed: ${_SERVICE_NAME}.service'
 "
-
-  _restart_lms_app_with_diagnostics
-
-  success "Gunicorn service configured [${_BENCH_ID}]"
+  success "Gunicorn service unit installed [${_BENCH_ID}]"
   _deploy_log "Step 12 complete"
 fi
 
 if step_enabled 13; then
-  header "Step 13 — Start Frappe workers [${_BENCH_ID}]"
-  _deploy_log "Step 13: start workers"
+  header "Step 13 — Build assets, warm manifest, start workers [${_BENCH_ID}]"
+  _deploy_log "Step 13: build assets and start workers"
 
-  run_remote_heredoc "Fix asset manifest permissions [${_BENCH_ID}]" "
+  _flush_redis_asset_keys
+  _clear_bench_caches_only
+  _build_and_verify_assets
+  _warm_asset_manifest
+
+  run_remote_heredoc "Start workers [${_BENCH_ID}]" "
 set +e
-chmod -R o+rX '${LMS_FRAPPE_BENCH_DIR}/sites/assets' 2>/dev/null || true
-chmod -R o+rX '${LMS_FRAPPE_BENCH_DIR}/apps/frappe/frappe/public' 2>/dev/null || true
-find '${LMS_FRAPPE_BENCH_DIR}/sites/assets' -name 'manifest.json' -exec chmod o+r {} + 2>/dev/null || true
-echo 'Asset permissions fixed'
-"
-
-  _PY_STRIP13_LOCAL=$(mktemp /tmp/lms-strip13-XXXXXX.py)
-  _PY_STRIP13_REMOTE="/tmp/lms-strip13-${_BENCH_ID}-$$.py"
-
-  cat > "${_PY_STRIP13_LOCAL}" <<'PYEOF13'
-import re, pathlib, sys
-conf = sys.argv[1]
-p = pathlib.Path(conf)
-t = p.read_text()
-t = re.sub(r'\[(?:program|group):[^\]]*redis[^\]]*\][^\[]*', '', t, flags=re.DOTALL|re.IGNORECASE)
-t = re.sub(r'(?m)^programs\s*=.*redis.*\n', '', t, flags=re.IGNORECASE)
-p.write_text(t)
-print('Stripped.')
-PYEOF13
-
-  if ! $LMS_DRY_RUN; then
-    scp ${SCP_OPTS} "${_PY_STRIP13_LOCAL}" "${TARGET}:${_PY_STRIP13_REMOTE}"
-  else
-    info "DRY RUN: would scp strip13 python script to remote"
-  fi
-  rm -f "${_PY_STRIP13_LOCAL}"
-
-  run_remote_heredoc "Verify supervisor config is clean then start LMS workers [${_BENCH_ID}]" "
-set +e
-
 _conf='/etc/supervisor/conf.d/${_SUPERVISOR_CONF_NAME}.conf'
-if [[ ! -f \"\${_conf}\" ]]; then
-  echo 'ERROR: supervisor config missing' >&2
-  exit 1
-fi
-
-if grep -qi 'redis' \"\${_conf}\"; then
-  echo 'WARNING: redis references still present — stripping now'
-  python3 '${_PY_STRIP13_REMOTE}' \"\${_conf}\"
-fi
-rm -f '${_PY_STRIP13_REMOTE}' 2>/dev/null || true
+[[ -f \"\${_conf}\" ]] || { echo 'ERROR: supervisor config missing' >&2; exit 1; }
 
 supervisorctl reread 2>&1 || true
 supervisorctl update 2>&1 || true
-
-supervisorctl start '${_SUPERVISOR_CONF_NAME}-web:' 2>/dev/null || true
 supervisorctl start '${_SUPERVISOR_CONF_NAME}-workers:' 2>/dev/null || true
-
 sleep 8
-
-echo '=== Supervisor status after start ==='
 supervisorctl status 2>/dev/null || true
-
-supervisorctl status '${_SUPERVISOR_CONF_NAME}-web:' 2>/dev/null   && echo 'LMS web group: OK'   || echo 'WARNING: LMS web group not running'
 "
 
   _ensure_all_log_dirs
-
-  success "Frappe workers started [${_BENCH_ID}]"
+  success "Assets built, manifest warmed, workers started [${_BENCH_ID}]"
   _deploy_log "Step 13 complete"
 fi
 
 if step_enabled 14; then
-  header "Step 14 — Final restart + health check [${_BENCH_ID}]"
-  _deploy_log "Step 14: final restart"
+  header "Step 14 — Start gunicorn + final checks [${_BENCH_ID}]"
+  _deploy_log "Step 14: start gunicorn and verify"
 
-  run_remote_heredoc "Restart bench supervisor processes [${_BENCH_ID}]" "
+  _restart_lms_app_with_diagnostics
+
+  LMS_WAIT 15
+
+  run_remote_heredoc "Verify gunicorn is serving requests [${_BENCH_ID}]" "
 set +e
-supervisorctl restart '${_SUPERVISOR_CONF_NAME}-web:' 2>/dev/null || true
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  http_code=\$(curl -sf --max-time 10 \
+    -H 'X-Frappe-Site-Name: ${LMS_FRAPPE_SITE}' \
+    -o /dev/null -w '%{http_code}' \
+    http://127.0.0.1:${LMS_GUNICORN_PORT} 2>/dev/null || echo '000')
+  if [[ \"\${http_code}\" != '000' && \"\${http_code}\" != '500' && \"\${http_code}\" != '502' && \"\${http_code}\" != '503' ]]; then
+    echo \"gunicorn responded: HTTP \${http_code}\"
+    break
+  fi
+  echo \"attempt \${i}/10 — HTTP \${http_code} — waiting 8s...\"
+  sleep 8
+  if [[ \${i} -eq 10 ]]; then
+    echo 'WARNING: gunicorn returning errors — checking journal'
+    journalctl -u ${_SERVICE_NAME} -n 30 --no-pager 2>/dev/null || true
+  fi
+done
+"
+
+  run_remote_heredoc "Restart workers after gunicorn confirmed [${_BENCH_ID}]" "
+set +e
 supervisorctl restart '${_SUPERVISOR_CONF_NAME}-workers:' 2>/dev/null || true
 sleep 5
 supervisorctl status 2>/dev/null || true
 "
 
-  LMS_WAIT 10
-  _restart_lms_app_with_diagnostics
-  LMS_WAIT 5
   do_status
 
-  success "Final health check complete [${_BENCH_ID}]"
+  success "Final checks complete [${_BENCH_ID}]"
   _deploy_log "Step 14 complete"
 fi
 
@@ -1785,18 +1779,17 @@ _open_port() {
     firewall-cmd --reload 2>/dev/null || true
     echo \"firewalld: opened \${port}\"
   else
-    echo \"No local firewall found — open port \${port} in your cloud security group manually\"
+    echo \"no firewall tool found — open port \${port} in your cloud security group\"
   fi
 }
-
 _open_port ${_FW_HTTP}
 ${LMS_ENABLE_HTTPS} && _open_port ${LMS_NGINX_HTTPS_PORT}
 "
     warn "Also open port ${_FW_HTTP} in your cloud NSG / security group."
-    $LMS_ENABLE_HTTPS && warn "Also open port ${LMS_NGINX_HTTPS_PORT} (HTTPS) in your cloud NSG / security group."
-    _deploy_log "Step 15 complete: opened ${_FW_HTTP}${LMS_ENABLE_HTTPS:+ and ${LMS_NGINX_HTTPS_PORT}}"
+    $LMS_ENABLE_HTTPS && warn "Also open port ${LMS_NGINX_HTTPS_PORT} (HTTPS) in cloud security group."
+    _deploy_log "Step 15 complete"
   else
-    info "Step 15 — Skipping firewall (LMS_OPEN_FIREWALL_PORT=false)"
+    info "Step 15 — skipping firewall (LMS_OPEN_FIREWALL_PORT=false)"
     _deploy_log "Step 15: skipped"
   fi
 fi
