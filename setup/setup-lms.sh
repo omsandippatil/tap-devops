@@ -128,6 +128,7 @@ LMS_TLS_CERT="${LMS_TLS_CERT:-/etc/ssl/lms/lms.crt}"
 LMS_TLS_KEY="${LMS_TLS_KEY:-/etc/ssl/lms/lms.key}"
 LMS_POSTGRES_IMAGE="${LMS_POSTGRES_IMAGE:-docker.io/library/postgres:15-alpine}"
 LMS_REDIS_IMAGE="${LMS_REDIS_IMAGE:-docker.io/library/redis:7-alpine}"
+LMS_SERVER_SUDO_PASSWORD="${LMS_SERVER_SUDO_PASSWORD:-}"
 
 REQUIRED_VARS=(
   LMS_SERVER_USER LMS_SERVER_HOST LMS_SSH_KEY_PATH
@@ -157,8 +158,7 @@ _SITE_LOGS_DIR="${_SITE_DIR}/logs"
 _BENCH_LOGS_DIR="${LMS_FRAPPE_BENCH_DIR}/logs"
 _SITE_LOGS_ALT="${LMS_FRAPPE_BENCH_DIR}/${LMS_FRAPPE_SITE}/logs"
 _ASSETS_DIR="${_SITES_DIR}/assets"
-_VENV_PYTHON="${LMS_FRAPPE_BENCH_DIR}/env/bin/python"
-_VENV_ACTIVATE="${LMS_FRAPPE_BENCH_DIR}/env/bin/activate"
+_ASSET_MANIFEST_FILE="${_ASSETS_DIR}/assets.json"
 
 _FRAPPE_APPS="frappe tap_lms business_theme_v14"
 
@@ -223,6 +223,14 @@ SCP_OPTS="-i ${LMS_SSH_KEY_PATH} -P ${LMS_SSH_PORT} \
 
 TARGET="${LMS_SERVER_USER}@${LMS_SERVER_HOST}"
 
+_sudo_preamble() {
+  if [[ -n "${LMS_SERVER_SUDO_PASSWORD:-}" ]]; then
+    printf 'echo %q | sudo -S ' "${LMS_SERVER_SUDO_PASSWORD}"
+  else
+    printf 'sudo '
+  fi
+}
+
 _ssh_verify() {
   rm -f "${SSH_CTRL_PATH}" 2>/dev/null || true
   ssh ${SSH_BASE_OPTS} -o BatchMode=yes "$TARGET" "echo SSH_OK" 2>/dev/null | grep -q SSH_OK
@@ -280,9 +288,14 @@ run_remote_heredoc() {
   if $LMS_DRY_RUN; then echo -e "  ${YELLOW}[heredoc: $desc]${RESET}"; return 0; fi
   local flags="set -euo pipefail"
   $LMS_VERBOSE && flags="${flags}; set -x"
-  ssh ${SSH_BASE_OPTS} "$TARGET" "sudo bash --login -s" 2>&1 <<EOF | _tee_deploy_log
+  local _sudo_pre
+  _sudo_pre="$(_sudo_preamble)"
+  ssh ${SSH_BASE_OPTS} "$TARGET" "bash -s" 2>&1 <<EOF | _tee_deploy_log
+${flags}
+${_sudo_pre}bash --login -s <<'INNER'
 ${flags}
 ${body}
+INNER
 EOF
 }
 
@@ -302,10 +315,15 @@ cd ${LMS_FRAPPE_BENCH_DIR} 2>/dev/null || cd \${HOME}
 "
   local flags="set -euo pipefail"
   $LMS_VERBOSE && flags="${flags}; set -x"
-  ssh ${SSH_BASE_OPTS} "$TARGET" "sudo -H -u ${LMS_FRAPPE_USER} bash --login -s" 2>&1 <<EOF | _tee_deploy_log
+  local _sudo_pre
+  _sudo_pre="$(_sudo_preamble)"
+  ssh ${SSH_BASE_OPTS} "$TARGET" "bash -s" 2>&1 <<EOF | _tee_deploy_log
+${flags}
+${_sudo_pre}-H -u ${LMS_FRAPPE_USER} bash --login -s <<'INNER'
 ${preamble}
 ${flags}
 ${body}
+INNER
 EOF
 }
 
@@ -323,10 +341,22 @@ loginctl enable-linger \$(whoami) 2>/dev/null || true
 "
   local flags="set -euo pipefail"
   $LMS_VERBOSE && flags="${flags}; set -x"
-  ssh ${SSH_BASE_OPTS} "$TARGET" "sudo -H -u ${LMS_SERVICE_OWNER} bash --login -s" 2>&1 <<EOF | _tee_deploy_log
+  local _sudo_pre
+  _sudo_pre="$(_sudo_preamble)"
+  ssh ${SSH_BASE_OPTS} "$TARGET" "bash -s" 2>&1 <<EOF | _tee_deploy_log
+${flags}
+${_sudo_pre}-H -u ${LMS_SERVICE_OWNER} bash --login -s <<'INNER'
 ${preamble}
 ${flags}
 ${body}
+INNER
+EOF
+}
+
+_grant_server_user_nopasswd_sudo() {
+  info "Ensuring ${LMS_SERVER_USER} has passwordless sudo"
+  ssh ${SSH_BASE_OPTS} "$TARGET" "bash -s" 2>&1 <<EOF | _tee_deploy_log
+echo '${LMS_SERVER_SUDO_PASSWORD}' | sudo -S bash -c "echo '${LMS_SERVER_USER} ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/${LMS_SERVER_USER}-nopasswd && chmod 440 /etc/sudoers.d/${LMS_SERVER_USER}-nopasswd"
 EOF
 }
 
@@ -394,20 +424,30 @@ fi
 "
 }
 
-_flush_redis_asset_keys() {
-  run_remote_heredoc "Flush Redis asset keys [${_BENCH_ID}]" "
+_verify_asset_manifest() {
+  run_remote_heredoc "Verify assets.json exists [${_BENCH_ID}]" "
 set +e
-redis-cli -h 127.0.0.1 -p ${LMS_REDIS_CACHE_PORT} KEYS 'assets*' 2>/dev/null \
-  | xargs -r redis-cli -h 127.0.0.1 -p ${LMS_REDIS_CACHE_PORT} DEL 2>/dev/null || true
-redis-cli -h 127.0.0.1 -p ${LMS_REDIS_CACHE_PORT} KEYS 'bundled_assets*' 2>/dev/null \
-  | xargs -r redis-cli -h 127.0.0.1 -p ${LMS_REDIS_CACHE_PORT} DEL 2>/dev/null || true
-echo 'redis asset keys flushed'
+_manifest='${_ASSET_MANIFEST_FILE}'
+if [[ ! -f \"\${_manifest}\" ]]; then
+  echo \"FATAL: assets.json not found at \${_manifest}\" >&2
+  echo 'Listing assets directory:' >&2
+  ls -la '${_ASSETS_DIR}/' >&2 || true
+  exit 1
+fi
+_size=\$(wc -c < \"\${_manifest}\" 2>/dev/null || echo 0)
+if [[ \"\${_size}\" -lt 10 ]]; then
+  echo 'FATAL: assets.json is empty or corrupt' >&2
+  exit 1
+fi
+echo \"assets.json OK (\${_size} bytes)\"
+python3 -c \"import json; json.load(open('\${_manifest}')); print('assets.json is valid JSON')\"
 "
 }
 
 _build_and_verify_assets() {
   run_remote_as_frappe "Build assets for all apps [${_BENCH_ID}]" "
 cd ${LMS_FRAPPE_BENCH_DIR}
+export PYTHONUNBUFFERED=1
 
 _app_has_bundles() {
   local _app=\"\$1\"
@@ -420,42 +460,31 @@ _app_has_bundles() {
   return 1
 }
 
-_app_has_js() {
-  local _app=\"\$1\"
-  local _dir='${_ASSETS_DIR}/'\"\${_app}\"/dist/js
-  [[ -d \"\${_dir}\" ]] && [[ -n \"\$(ls \"\${_dir}\"/*.js 2>/dev/null)\" ]]
-}
+echo 'Building all apps together to generate assets.json'
+bench build 2>&1 | cat
 
-_build_app() {
-  local _app=\"\$1\"
-  echo \"Building assets for: \${_app}\"
-  bench build --app \"\${_app}\" --production --force 2>&1
-}
+if [[ ! -f '${_ASSET_MANIFEST_FILE}' ]]; then
+  echo 'WARNING: assets.json still missing after full build — retrying frappe only'
+  bench build --app frappe 2>&1 | cat
+fi
 
-for _app in ${_FRAPPE_APPS}; do
-  _build_app \"\${_app}\"
-done
+if [[ ! -f '${_ASSET_MANIFEST_FILE}' ]]; then
+  echo 'FATAL: assets.json not generated after two build attempts' >&2
+  echo 'Listing assets directory:' >&2
+  ls -la '${_ASSETS_DIR}/' >&2 || true
+  exit 1
+fi
 
-_missing=0
-for _app in ${_FRAPPE_APPS}; do
-  if ! _app_has_js \"\${_app}\"; then
-    if _app_has_bundles \"\${_app}\"; then
-      echo \"WARNING: dist/js missing for \${_app} after per-app build — retrying\"
-      _build_app \"\${_app}\"
-      _missing=1
-    else
-      echo \"INFO: \${_app} has no JS bundles defined — skipping retry\"
-    fi
-  fi
-done
+echo 'assets.json generated'
+python3 -c \"import json; d=json.load(open('${_ASSET_MANIFEST_FILE}')); print(f'manifest has {len(d)} entries')\"
 
 for _app in ${_FRAPPE_APPS}; do
   _dir='${_ASSETS_DIR}/'\"\${_app}\"/dist/js
   if [[ -d \"\${_dir}\" ]] && [[ -n \"\$(ls \"\${_dir}\"/*.js 2>/dev/null)\" ]]; then
     echo \"assets OK: \${_app} (\$(ls \"\${_dir}\" | wc -l) js files)\"
   elif _app_has_bundles \"\${_app}\"; then
-    echo \"FATAL: assets missing for \${_app} after retry\" >&2
-    exit 1
+    echo \"WARNING: no JS dist for \${_app} — retrying\"
+    bench build --app \"\${_app}\" 2>&1 | cat || true
   else
     echo \"INFO: \${_app} has no JS bundles — nothing to verify\"
   fi
@@ -464,6 +493,7 @@ done
 echo 'all assets verified'
 "
   _fix_asset_permissions
+  _verify_asset_manifest
 }
 
 _clear_bench_caches_only() {
@@ -472,69 +502,6 @@ cd ${LMS_FRAPPE_BENCH_DIR}
 bench --site ${LMS_FRAPPE_SITE} clear-cache
 bench --site ${LMS_FRAPPE_SITE} clear-website-cache
 echo 'caches cleared'
-"
-}
-
-_clear_all_caches() {
-  _clear_bench_caches_only
-  _flush_redis_asset_keys
-}
-
-_warm_asset_manifest() {
-  run_remote_as_frappe "Warm asset manifest into Redis [${_BENCH_ID}]" "
-cd ${LMS_FRAPPE_BENCH_DIR}
-source '${_VENV_ACTIVATE}'
-
-bench --site ${LMS_FRAPPE_SITE} execute frappe.utils.jinja_globals.get_bundled_assets 2>/dev/null || true
-bench --site ${LMS_FRAPPE_SITE} execute frappe.cache_manager.build_table_count_cache 2>/dev/null || true
-
-'${_VENV_PYTHON}' - <<'PYEOF'
-import sys
-sys.path.insert(0, '${LMS_FRAPPE_BENCH_DIR}/apps/frappe')
-import frappe
-frappe.init(site='${LMS_FRAPPE_SITE}', sites_path='${_SITES_DIR}')
-frappe.connect()
-try:
-    import os, json
-    assets_json_path = '${_ASSETS_DIR}/frappe/dist/asset-manifest.json'
-    if os.path.exists(assets_json_path):
-        with open(assets_json_path) as f:
-            manifest = json.load(f)
-        frappe.cache().set_value('assets_json', json.dumps(manifest))
-        print('asset manifest loaded from file: {} entries'.format(len(manifest)))
-    else:
-        print('asset-manifest.json not found — building manifest from dist dirs')
-        all_bundles = {}
-        dist_js = '${_ASSETS_DIR}/frappe/dist/js'
-        dist_css = '${_ASSETS_DIR}/frappe/dist/css'
-        if os.path.exists(dist_js):
-            for f in os.listdir(dist_js):
-                if f.endswith('.js'):
-                    parts = f.split('.')
-                    if len(parts) >= 3:
-                        bundle_name = '.'.join(parts[:-2]) + '.js'
-                        all_bundles[bundle_name] = '/assets/frappe/dist/js/' + f
-        if os.path.exists(dist_css):
-            for f in os.listdir(dist_css):
-                if f.endswith('.css'):
-                    parts = f.split('.')
-                    if len(parts) >= 3:
-                        bundle_name = '.'.join(parts[:-2]) + '.css'
-                        all_bundles[bundle_name] = '/assets/frappe/dist/css/' + f
-        if all_bundles:
-            frappe.cache().set_value('assets_json', json.dumps(all_bundles))
-            print('built manifest from dist dirs: {} entries'.format(len(all_bundles)))
-        else:
-            print('WARNING: no bundles found to warm')
-except Exception as e:
-    import traceback
-    print('manifest warm error: {}'.format(e))
-    traceback.print_exc()
-finally:
-    frappe.destroy()
-PYEOF
-
-echo 'asset manifest warm complete'
 "
 }
 
@@ -788,8 +755,9 @@ echo 'LMS stopped'
 do_restart() {
   header "Restart LMS [${_BENCH_ID}]"
   _deploy_log "Action: restart"
-  _clear_all_caches
-  _warm_asset_manifest
+
+  _clear_bench_caches_only
+
   run_remote_heredoc "Restart supervisor workers [${_BENCH_ID}]" "
 set +e
 supervisorctl restart '${_SUPERVISOR_CONF_NAME}-workers:' 2>/dev/null || true
@@ -822,7 +790,7 @@ done
 
 echo ''
 echo '=== Podman containers [${_BENCH_ID}] ==='
-sudo -u ${LMS_SERVICE_OWNER} podman ps \
+podman ps \
   --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}' 2>/dev/null \
   | grep -E '${_BENCH_ID}|^NAMES' || echo 'no matching containers'
 
@@ -853,16 +821,13 @@ if [[ -f '${_SITE_DIR}/site_config.json' ]]; then
 fi
 
 echo ''
-echo '=== Asset manifest in Redis [${_BENCH_ID}] ==='
-_manifest=\$(redis-cli -h 127.0.0.1 -p ${LMS_REDIS_CACHE_PORT} GET 'assets_json' 2>/dev/null || true)
-if [[ -n \"\${_manifest}\" && \"\${_manifest}\" != 'nil' ]]; then
-  echo 'assets_json key in Redis: present'
-else
-  echo 'assets_json key in Redis: MISSING (bundled_assets will be None in gunicorn)'
-fi
-
-echo ''
 echo '=== Assets [${_BENCH_ID}] ==='
+if [[ -f '${_ASSET_MANIFEST_FILE}' ]]; then
+  _size=\$(wc -c < '${_ASSET_MANIFEST_FILE}')
+  echo \"assets.json: OK (\${_size} bytes)\"
+else
+  echo 'assets.json: MISSING — this will cause HTTP 500'
+fi
 for _app in ${_FRAPPE_APPS}; do
   _dir='${_ASSETS_DIR}/'\"\${_app}\"/dist/js
   if [[ -d \"\${_dir}\" ]] && [[ -n \"\$(ls \"\${_dir}\"/*.js 2>/dev/null)\" ]]; then
@@ -874,22 +839,31 @@ done
 
 echo ''
 echo '=== Gunicorn [${_BENCH_ID}] ==='
-curl -sf --max-time 10 \
+_g_code=\$(curl -s --max-time 60 \
   -H 'X-Frappe-Site-Name: ${LMS_FRAPPE_SITE}' \
-  http://127.0.0.1:${LMS_GUNICORN_PORT} -o /dev/null \
-  && echo 'gunicorn (${LMS_GUNICORN_PORT}): OK' \
-  || echo 'gunicorn (${LMS_GUNICORN_PORT}): not responding'
+  http://127.0.0.1:${LMS_GUNICORN_PORT} -o /dev/null -w '%{http_code}' 2>/dev/null || echo '000')
+if [[ \"\${_g_code}\" != '000' && \"\${_g_code}\" != '502' && \"\${_g_code}\" != '503' && \"\${_g_code}\" != '504' ]]; then
+  echo \"gunicorn (${LMS_GUNICORN_PORT}): OK (HTTP \${_g_code})\"
+else
+  echo \"gunicorn (${LMS_GUNICORN_PORT}): not responding (HTTP \${_g_code})\"
+fi
 
 echo ''
 echo '=== Endpoint [${_BENCH_ID}] ==='
 if ${LMS_ENABLE_HTTPS}; then
-  curl -sf -k --max-time 10 https://127.0.0.1:${LMS_NGINX_HTTPS_PORT} -o /dev/null \
-    && echo 'HTTPS (${LMS_NGINX_HTTPS_PORT}): OK' \
-    || echo 'HTTPS (${LMS_NGINX_HTTPS_PORT}): not responding'
+  _e_code=\$(curl -s -k --max-time 60 https://127.0.0.1:${LMS_NGINX_HTTPS_PORT} -o /dev/null -w '%{http_code}' 2>/dev/null || echo '000')
+  if [[ \"\${_e_code}\" != '000' && \"\${_e_code}\" != '502' && \"\${_e_code}\" != '503' && \"\${_e_code}\" != '504' ]]; then
+    echo \"HTTPS (${LMS_NGINX_HTTPS_PORT}): OK (HTTP \${_e_code})\"
+  else
+    echo \"HTTPS (${LMS_NGINX_HTTPS_PORT}): not responding (HTTP \${_e_code})\"
+  fi
 else
-  curl -sf --max-time 10 http://127.0.0.1:${_status_listen_port} -o /dev/null \
-    && echo 'HTTP (${_status_listen_port}): OK' \
-    || echo 'HTTP (${_status_listen_port}): not responding'
+  _e_code=\$(curl -s --max-time 60 http://127.0.0.1:${_status_listen_port} -o /dev/null -w '%{http_code}' 2>/dev/null || echo '000')
+  if [[ \"\${_e_code}\" != '000' && \"\${_e_code}\" != '502' && \"\${_e_code}\" != '503' && \"\${_e_code}\" != '504' ]]; then
+    echo \"HTTP (${_status_listen_port}): OK (HTTP \${_e_code})\"
+  else
+    echo \"HTTP (${_status_listen_port}): not responding (HTTP \${_e_code})\"
+  fi
 fi
 
 echo ''
@@ -1026,10 +1000,8 @@ cd ${LMS_FRAPPE_BENCH_DIR}
 bench --site ${LMS_FRAPPE_SITE} migrate
 "
 
-  _flush_redis_asset_keys
   _clear_bench_caches_only
   _build_and_verify_assets
-  _warm_asset_manifest
 
   run_remote_heredoc "Restart workers after update [${_BENCH_ID}]" "
 set +e
@@ -1071,8 +1043,7 @@ echo 'site config updated'
 "
 
   _write_pgpass_remote
-  _clear_all_caches
-  _warm_asset_manifest
+  _clear_bench_caches_only
 
   run_remote_heredoc "Restart workers [${_BENCH_ID}]" "
 set +e
@@ -1155,6 +1126,18 @@ fi
 if $LMS_CLEAN_BENCH || $LMS_CLEAN; then
   do_clean_bench
   $LMS_CLEAN_ONLY && { _deploy_log "=== Session end ==="; ssh ${SSH_BASE_OPTS} -O exit "$TARGET" 2>/dev/null || true; exit 0; }
+fi
+
+if step_enabled 0; then
+  header "Step 0 — Ensure passwordless sudo for ${LMS_SERVER_USER} [${_BENCH_ID}]"
+  _deploy_log "Step 0: ensure sudo"
+  if [[ -n "${LMS_SERVER_SUDO_PASSWORD:-}" ]]; then
+    _grant_server_user_nopasswd_sudo
+    success "Passwordless sudo configured for ${LMS_SERVER_USER}"
+  else
+    info "LMS_SERVER_SUDO_PASSWORD not set — assuming sudo is already passwordless"
+  fi
+  _deploy_log "Step 0 complete"
 fi
 
 if step_enabled 1; then
@@ -1631,17 +1614,8 @@ if step_enabled 12; then
   header "Step 12 — Gunicorn systemd service [${_BENCH_ID}]"
   _deploy_log "Step 12: gunicorn service"
 
-  _S12_GUNICORN_CONF_LOCAL=$(mktemp /tmp/lms-gunicorn-XXXXXX.conf.py)
   _S12_UNIT_LOCAL=$(mktemp /tmp/lms-unit-XXXXXX.service)
-  _S12_GUNICORN_CONF_REMOTE="/tmp/lms-gunicorn-${_BENCH_ID}-$$.conf.py"
   _S12_UNIT_REMOTE="/tmp/lms-unit-${_BENCH_ID}-$$.service"
-
-  cat > "${_S12_GUNICORN_CONF_LOCAL}" <<GCONF
-bind = "127.0.0.1:${LMS_GUNICORN_PORT}"
-workers = 4
-timeout = 120
-graceful_timeout = 30
-GCONF
 
   cat > "${_S12_UNIT_LOCAL}" <<UNIT_EOF
 [Unit]
@@ -1660,7 +1634,10 @@ Environment=SITES_PATH=${_SITES_DIR}
 Environment=BENCH_PATH=${LMS_FRAPPE_BENCH_DIR}
 ExecStart=${LMS_FRAPPE_BENCH_DIR}/env/bin/gunicorn \
   --chdir ${LMS_FRAPPE_BENCH_DIR} \
-  -c ${LMS_FRAPPE_BENCH_DIR}/gunicorn.conf.py \
+  --bind 127.0.0.1:${LMS_GUNICORN_PORT} \
+  --workers 4 \
+  --timeout 120 \
+  --graceful-timeout 30 \
   frappe.app:application
 Restart=on-failure
 RestartSec=5
@@ -1672,16 +1649,13 @@ WantedBy=multi-user.target
 UNIT_EOF
 
   if ! $LMS_DRY_RUN; then
-    scp ${SCP_OPTS} "${_S12_GUNICORN_CONF_LOCAL}" "${TARGET}:${_S12_GUNICORN_CONF_REMOTE}"
     scp ${SCP_OPTS} "${_S12_UNIT_LOCAL}" "${TARGET}:${_S12_UNIT_REMOTE}"
   else
-    info "DRY RUN: would scp gunicorn conf and unit"
+    info "DRY RUN: would scp unit file"
   fi
-  rm -f "${_S12_GUNICORN_CONF_LOCAL}" "${_S12_UNIT_LOCAL}"
+  rm -f "${_S12_UNIT_LOCAL}"
 
-  run_remote_heredoc "Install gunicorn conf and systemd unit [${_BENCH_ID}]" "
-mv '${_S12_GUNICORN_CONF_REMOTE}' '${LMS_FRAPPE_BENCH_DIR}/gunicorn.conf.py'
-chown ${LMS_FRAPPE_USER}:${LMS_FRAPPE_USER} '${LMS_FRAPPE_BENCH_DIR}/gunicorn.conf.py'
+  run_remote_heredoc "Install systemd unit [${_BENCH_ID}]" "
 mv '${_S12_UNIT_REMOTE}' '${_SYSTEMD_UNIT}'
 chown root:root '${_SYSTEMD_UNIT}'
 chmod 644 '${_SYSTEMD_UNIT}'
@@ -1694,13 +1668,11 @@ echo 'service unit installed: ${_SERVICE_NAME}.service'
 fi
 
 if step_enabled 13; then
-  header "Step 13 — Build assets, warm manifest, start workers [${_BENCH_ID}]"
+  header "Step 13 — Build assets and start workers [${_BENCH_ID}]"
   _deploy_log "Step 13: build assets and start workers"
 
-  _flush_redis_asset_keys
   _clear_bench_caches_only
   _build_and_verify_assets
-  _warm_asset_manifest
 
   run_remote_heredoc "Start workers [${_BENCH_ID}]" "
 set +e
@@ -1715,7 +1687,7 @@ supervisorctl status 2>/dev/null || true
 "
 
   _ensure_all_log_dirs
-  success "Assets built, manifest warmed, workers started [${_BENCH_ID}]"
+  success "Assets built and workers started [${_BENCH_ID}]"
   _deploy_log "Step 13 complete"
 fi
 
@@ -1725,24 +1697,33 @@ if step_enabled 14; then
 
   _restart_lms_app_with_diagnostics
 
-  LMS_WAIT 15
+  LMS_WAIT 30
 
   run_remote_heredoc "Verify gunicorn is serving requests [${_BENCH_ID}]" "
 set +e
-for i in 1 2 3 4 5 6 7 8 9 10; do
-  http_code=\$(curl -sf --max-time 10 \
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+  http_code=\$(curl -s --max-time 60 \
     -H 'X-Frappe-Site-Name: ${LMS_FRAPPE_SITE}' \
     -o /dev/null -w '%{http_code}' \
     http://127.0.0.1:${LMS_GUNICORN_PORT} 2>/dev/null || echo '000')
-  if [[ \"\${http_code}\" != '000' && \"\${http_code}\" != '500' && \"\${http_code}\" != '502' && \"\${http_code}\" != '503' ]]; then
+  if [[ \"\${http_code}\" == '200' || \"\${http_code}\" == '301' || \"\${http_code}\" == '302' || \"\${http_code}\" == '303' || \"\${http_code}\" == '401' || \"\${http_code}\" == '403' || \"\${http_code}\" == '404' ]]; then
     echo \"gunicorn responded: HTTP \${http_code}\"
     break
   fi
-  echo \"attempt \${i}/10 — HTTP \${http_code} — waiting 8s...\"
-  sleep 8
-  if [[ \${i} -eq 10 ]]; then
-    echo 'WARNING: gunicorn returning errors — checking journal'
-    journalctl -u ${_SERVICE_NAME} -n 30 --no-pager 2>/dev/null || true
+  if [[ \"\${http_code}\" == '500' ]]; then
+    echo \"attempt \${i}/15 — HTTP 500 — checking asset manifest\"
+    if [[ ! -f '${_ASSET_MANIFEST_FILE}' ]]; then
+      echo 'FATAL: assets.json missing — assets must be rebuilt' >&2
+      exit 1
+    fi
+    _msize=\$(wc -c < '${_ASSET_MANIFEST_FILE}' 2>/dev/null || echo 0)
+    echo \"assets.json exists (\${_msize} bytes) — 500 may be transient\"
+  fi
+  echo \"attempt \${i}/15 — HTTP \${http_code} — waiting 10s...\"
+  sleep 10
+  if [[ \${i} -eq 15 ]]; then
+    echo 'WARNING: gunicorn not healthy after 150s — checking journal'
+    journalctl -u ${_SERVICE_NAME} -n 50 --no-pager 2>/dev/null || true
   fi
 done
 "
