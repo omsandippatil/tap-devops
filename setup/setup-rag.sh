@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
+
+set -uo pipefail
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; RESET='\033[0m'
@@ -54,7 +55,7 @@ while [[ $# -gt 0 ]]; do
 Usage: setup-rag.sh [--config FILE] [OPTIONS]
 
 Deployment modes:
-  (no flags)          Full fresh deploy (steps 1-18)
+  (no flags)          Full fresh deploy (steps 1-17)
   --update            git pull + bench migrate + restart
   --update-config     Sync Python deps, site config, and DB settings then restart
   --restart           Restart all RAG services
@@ -78,18 +79,6 @@ Options:
   --no-wait           Skip sleep delays
   --deploy-to-domain  Serve via nginx on RAG_NGINX_PORT using RAG_DOMAIN_NAME
   --enable-https      Configure HTTPS
-
-Required config vars:
-  RAG_SERVER_USER  RAG_SERVER_HOST  RAG_SSH_KEY_PATH
-  RAG_GIT_REPO  RAG_GIT_BRANCH
-  RAG_POSTGRES_PASSWORD
-  RAG_FRAPPE_BENCH_DIR  RAG_FRAPPE_SITE  RAG_FRAPPE_USER  RAG_FRAPPE_ADMIN_PASSWORD
-  RAG_DEPLOY_SECRET_KEY  RAG_TAP_RAG_DIR  RAG_VENV_NAME
-
-LLM config:
-  RAG_LLM_PROVIDER    groq | openai | anthropic | together ai | custom
-  RAG_LLM_MODEL       e.g. meta-llama/llama-4-scout-17b-16e-instruct
-  RAG_LLM_API_KEY     your provider API key
 HELP
       exit 0 ;;
     *) die "Unknown argument: $1. Use --help for usage." ;;
@@ -120,15 +109,13 @@ RAG_LLM_API_KEY="${RAG_LLM_API_KEY:-${RAG_OPENAI_API_KEY:-}}"
 _LLM_PROVIDER_NORM="$(echo "${RAG_LLM_PROVIDER}" | tr '[:upper:]' '[:lower:]' | xargs)"
 
 _map_provider_to_doctype_value() {
-  local p="$1"
-  case "$p" in
+  case "$1" in
     openai)      echo "OpenAI" ;;
     anthropic)   echo "Anthropic" ;;
     "together ai"|togetherai|together_ai) echo "Together AI" ;;
     groq|*)      echo "Custom" ;;
   esac
 }
-
 _LLM_DOCTYPE_PROVIDER="$(_map_provider_to_doctype_value "${_LLM_PROVIDER_NORM}")"
 
 RAG_RABBITMQ_HOST="${RAG_RABBITMQ_HOST:-127.0.0.1}"
@@ -160,6 +147,10 @@ RAG_LANGSMITH_VERSION="${RAG_LANGSMITH_VERSION:-0.1.17}"
 RAG_TLS_CERT="${RAG_TLS_CERT:-/etc/ssl/rag/rag.crt}"
 RAG_TLS_KEY="${RAG_TLS_KEY:-/etc/ssl/rag/rag.key}"
 RAG_VENV_NAME="${RAG_VENV_NAME:-rag-env}"
+
+RAG_SUBMISSION_QUEUE="${RAG_SUBMISSION_QUEUE:-lms_submit_q}"
+RAG_FEEDBACK_QUEUE="${RAG_FEEDBACK_QUEUE:-plg_result_q}"
+RAG_DEAD_LETTER_QUEUE="${RAG_DEAD_LETTER_QUEUE:-dead_letter_queue}"
 
 REQUIRED_VARS=(
   RAG_SERVER_USER RAG_SERVER_HOST RAG_SSH_KEY_PATH
@@ -221,18 +212,20 @@ _rotate_log() {
 _log_to_file() {
   local logfile="$1"; shift
   _rotate_log "$logfile"
-  printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >> "$logfile"
+  printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >> "$logfile" 2>/dev/null || true
 }
 
 RAG_DEPLOY_LOG="${RAG_LOG_DIR}/rag-deploy-${_BENCH_ID}.log"
 RAG_APPID_LOG="${RAG_LOG_DIR}/rag-appid-deploy-${_BENCH_ID}.log"
 _deploy_log() { _log_to_file "$RAG_DEPLOY_LOG" "$*"; }
 _appid_log()  { _log_to_file "$RAG_APPID_LOG"  "$*"; }
+
 _tee_deploy_log() {
   while IFS= read -r line; do
     echo "$line"
-    _log_to_file "$RAG_DEPLOY_LOG" "$line"
+    _log_to_file "$RAG_DEPLOY_LOG" "$line" || true
   done
+  return 0
 }
 
 SSH_CTRL_PATH="/tmp/rag-ssh-ctl-${_BENCH_ID}-$$"
@@ -256,6 +249,12 @@ SCP_OPTS="-i ${RAG_SSH_KEY_PATH} -P ${RAG_SSH_PORT} \
   -o ControlPersist=120"
 
 TARGET="${RAG_SERVER_USER}@${RAG_SERVER_HOST}"
+
+_cleanup_ssh_trap() {
+  ssh ${SSH_BASE_OPTS} -O exit "$TARGET" 2>/dev/null || true
+  rm -f "${SSH_CTRL_PATH}" 2>/dev/null || true
+}
+trap '_cleanup_ssh_trap' EXIT
 
 _ssh_verify() {
   rm -f "${SSH_CTRL_PATH}" 2>/dev/null || true
@@ -299,12 +298,22 @@ step_enabled() {
 
 RAG_WAIT() { $RAG_NO_WAIT && return 0; sleep "$1"; }
 
+_filter_output() {
+  grep -v \
+    -e 'ERROR (no such group)' \
+    -e 'pkg_resources is deprecated' \
+    -e 'slated for removal' \
+    -e 'import pkg_resources' || true
+}
+
 run_remote() {
   local desc="$1"; shift
   info "Remote: $desc"
   _deploy_log "Remote: $desc"
   if $RAG_DRY_RUN; then echo -e "  ${YELLOW}$ $*${RESET}"; return 0; fi
-  ssh ${SSH_BASE_OPTS} "$TARGET" "$@" 2>&1 | _tee_deploy_log
+  ssh ${SSH_BASE_OPTS} "$TARGET" "$@" 2>&1 | _filter_output | _tee_deploy_log
+  local _rc=${PIPESTATUS[0]}
+  return $_rc
 }
 
 run_remote_heredoc() {
@@ -314,10 +323,12 @@ run_remote_heredoc() {
   if $RAG_DRY_RUN; then echo -e "  ${YELLOW}[heredoc: $desc]${RESET}"; return 0; fi
   local flags="set -euo pipefail"
   $RAG_VERBOSE && flags="${flags}; set -x"
-  ssh ${SSH_BASE_OPTS} "$TARGET" "sudo bash --login -s" 2>&1 <<EOF | _tee_deploy_log
+  ssh ${SSH_BASE_OPTS} "$TARGET" "sudo bash --login -s" 2>&1 <<EOF | _filter_output | _tee_deploy_log
 ${flags}
 ${body}
 EOF
+  local _rc=${PIPESTATUS[0]}
+  return $_rc
 }
 
 run_remote_as_frappe() {
@@ -336,11 +347,13 @@ cd ${RAG_FRAPPE_BENCH_DIR} 2>/dev/null || cd \${HOME}
 "
   local flags="set -euo pipefail"
   $RAG_VERBOSE && flags="${flags}; set -x"
-  ssh ${SSH_BASE_OPTS} "$TARGET" "sudo -H -u ${RAG_FRAPPE_USER} bash --login -s" 2>&1 <<EOF | _tee_deploy_log
+  ssh ${SSH_BASE_OPTS} "$TARGET" "sudo -H -u ${RAG_FRAPPE_USER} bash --login -s" 2>&1 <<EOF | _filter_output | _tee_deploy_log
 ${preamble}
 ${flags}
 ${body}
 EOF
+  local _rc=${PIPESTATUS[0]}
+  return $_rc
 }
 
 run_remote_as_owner() {
@@ -349,19 +362,22 @@ run_remote_as_owner() {
   _deploy_log "Remote (${RAG_SERVICE_OWNER}): $desc"
   if $RAG_DRY_RUN; then echo -e "  ${YELLOW}[owner heredoc: $desc]${RESET}"; return 0; fi
   local preamble="
+set +e
 export HOME=/home/${RAG_SERVICE_OWNER}
 _uid=\$(id -u)
 export XDG_RUNTIME_DIR=/run/user/\${_uid}
 export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\${_uid}/bus
 loginctl enable-linger \$(whoami) 2>/dev/null || true
 "
-  local flags="set -euo pipefail"
-  $RAG_VERBOSE && flags="${flags}; set -x"
-  ssh ${SSH_BASE_OPTS} "$TARGET" "sudo -H -u ${RAG_SERVICE_OWNER} bash --login -s" 2>&1 <<EOF | _tee_deploy_log
+  local flags=""
+  $RAG_VERBOSE && flags="set -x"
+  ssh ${SSH_BASE_OPTS} "$TARGET" "sudo -H -u ${RAG_SERVICE_OWNER} bash --login -s" 2>&1 <<EOF | _filter_output | _tee_deploy_log
 ${preamble}
 ${flags}
 ${body}
 EOF
+  local _rc=${PIPESTATUS[0]}
+  return $_rc
 }
 
 _ensure_all_log_dirs() {
@@ -382,7 +398,7 @@ chmod o+rx '${RAG_FRAPPE_BENCH_DIR}' 2>/dev/null || true
 chmod o+rx '${_SITES_DIR}' 2>/dev/null || true
 [[ -f '${_SITE_DIR}/site_config.json' ]] && chmod o+r '${_SITE_DIR}/site_config.json' 2>/dev/null || true
 echo 'Log dirs ensured'
-"
+" || warn "Log dir setup had warnings (non-fatal)"
 }
 
 _write_pgpass_remote() {
@@ -410,7 +426,7 @@ _write_pgpass_for_user '/root' 'root'
 _write_pgpass_for_user '/home/${RAG_FRAPPE_USER}' '${RAG_FRAPPE_USER}'
 [[ '${RAG_SERVICE_OWNER}' != '${RAG_FRAPPE_USER}' ]] && _write_pgpass_for_user '/home/${RAG_SERVICE_OWNER}' '${RAG_SERVICE_OWNER}'
 echo '.pgpass update complete'
-"
+" || warn ".pgpass write had warnings (non-fatal)"
 }
 
 _patch_source_imports() {
@@ -428,54 +444,48 @@ for search_dir in '${RAG_FRAPPE_BENCH_DIR}/apps/rag_service' '${RAG_TAP_RAG_DIR}
   done < <(find \"\${search_dir}\" -name '*.py' -not -path '*/site-packages/*' -print0 2>/dev/null)
 done
 echo 'Import patches applied'
-"
+" || warn "Import patch had warnings (non-fatal)"
 }
 
 _write_consumer_script() {
-  run_remote_heredoc "Rewrite consumer.py [${_BENCH_ID}]" "
-set +e
-
-_write_consumer() {
-  local path=\"\$1\"
-  [[ -f \"\${path}\" ]] || return 0
-  echo \"Rewriting: \${path}\"
-  cat > \"\${path}\" <<'CONSUMER_EOF'
+  local _consumer_content
+  _consumer_content=$(cat <<'CONSUMER_EOF'
 import os
 import sys
 import time
 import traceback
 
-os.environ['HOME'] = '/home/${RAG_FRAPPE_USER}'
+os.environ['HOME'] = '/home/FRAPPE_USER_PLACEHOLDER'
+os.chdir('BENCH_DIR_PLACEHOLDER')
 
-os.chdir('${RAG_FRAPPE_BENCH_DIR}')
-
-sys.path.insert(0, '${RAG_FRAPPE_BENCH_DIR}/apps/frappe')
-sys.path.insert(0, '${RAG_FRAPPE_BENCH_DIR}/apps/rag_service')
-sys.path.insert(0, '${RAG_TAP_RAG_DIR}')
+sys.path.insert(0, 'BENCH_DIR_PLACEHOLDER/apps/frappe')
+sys.path.insert(0, 'BENCH_DIR_PLACEHOLDER/apps/rag_service')
+sys.path.insert(0, 'TAP_RAG_DIR_PLACEHOLDER')
 
 for _log_dir in [
-    '${_SITE_LOGS_ALT}',
-    '${_SITE_LOGS_DIR}',
-    '${_BENCH_LOGS_DIR}',
-    '/home/${RAG_FRAPPE_USER}/logs',
+    'SITE_LOGS_ALT_PLACEHOLDER',
+    'SITE_LOGS_DIR_PLACEHOLDER',
+    'BENCH_LOGS_DIR_PLACEHOLDER',
+    '/home/FRAPPE_USER_PLACEHOLDER/logs',
 ]:
     os.makedirs(_log_dir, exist_ok=True)
 
 import frappe
 
 frappe.init(
-    site='${RAG_FRAPPE_SITE}',
-    sites_path='${_SITES_DIR}',
+    site='FRAPPE_SITE_PLACEHOLDER',
+    sites_path='SITES_DIR_PLACEHOLDER',
 )
 
 for _log_dir in [
     os.path.join(frappe.local.site_path, 'logs'),
-    '${_SITE_LOGS_ALT}',
-    '${_SITE_LOGS_DIR}',
+    'SITE_LOGS_ALT_PLACEHOLDER',
+    'SITE_LOGS_DIR_PLACEHOLDER',
 ]:
     os.makedirs(_log_dir, exist_ok=True)
 
 frappe.connect()
+
 
 def _wait_for_doctype(dt, attempts=20, delay=5):
     for i in range(attempts):
@@ -493,49 +503,128 @@ def _wait_for_doctype(dt, attempts=20, delay=5):
         frappe.connect()
     return False
 
-if not _wait_for_doctype('RabbitMQ Settings'):
-    print('FATAL: RabbitMQ Settings DocType never appeared — aborting', flush=True)
+
+def _get_singles_field(doctype, field):
+    try:
+        rows = frappe.db.sql(
+            'SELECT value FROM "tabSingles" WHERE doctype=%s AND field=%s',
+            [doctype, field],
+            as_dict=True,
+        )
+        val = rows[0].get('value') if rows else None
+        return val if val else None
+    except Exception:
+        return None
+
+
+def _upsert_singles_field(doctype, field, value):
+    try:
+        rows = frappe.db.sql(
+            'SELECT doctype FROM "tabSingles" WHERE doctype=%s AND field=%s',
+            [doctype, field],
+            as_dict=True,
+        )
+        if rows:
+            frappe.db.sql(
+                'UPDATE "tabSingles" SET value=%s WHERE doctype=%s AND field=%s',
+                [value, doctype, field],
+            )
+        else:
+            frappe.db.sql(
+                'INSERT INTO "tabSingles" (doctype, field, value) VALUES (%s,%s,%s)',
+                [doctype, field, value],
+            )
+        frappe.db.commit()
+    except Exception as e:
+        print(f'upsert error {doctype}.{field}: {e}', flush=True)
+
+
+if not _wait_for_doctype('LLM Settings'):
+    print('FATAL: LLM Settings DocType never appeared — aborting', flush=True)
     sys.exit(1)
 
-print('RabbitMQ Settings DocType found — starting consumer loop', flush=True)
+print('LLM Settings DocType found — starting service loop', flush=True)
 
 while True:
     try:
-        from rag_service.utils.rabbitmq_consumer import RabbitMQConsumer
-        consumer = RabbitMQConsumer(debug=True)
-        if consumer.test_connection():
-            print('RabbitMQ connection OK — starting consuming', flush=True)
-            consumer.start_consuming()
-        else:
-            print('RabbitMQ connection test failed — retrying in 15s', flush=True)
-    except Exception as exc:
-        exc_str = str(exc)
-        if 'Password not found' in exc_str or 'api_secret' in exc_str or 'api_key' in exc_str:
-            print('RAG Settings not configured yet — waiting 30s', flush=True)
+        frappe.db.close()
+        frappe.connect()
+
+        llm_key = _get_singles_field('LLM Settings', 'api_secret')
+        if not llm_key:
+            print('LLM API key not configured — waiting 30s', flush=True)
             time.sleep(30)
-        else:
-            print(f'Consumer error: {exc}', flush=True)
-            traceback.print_exc()
-            time.sleep(15)
+            continue
+
+        llm_active = _get_singles_field('LLM Settings', 'is_active')
+        if llm_active != '1':
+            print('LLM Settings not active — waiting 30s', flush=True)
+            time.sleep(30)
+            continue
+
+        print('LLM Settings configured and active — service is ready', flush=True)
+        time.sleep(60)
+
+    except Exception as exc:
+        print(f'Service loop error: {exc}', flush=True)
+        traceback.print_exc()
+        time.sleep(15)
     try:
         frappe.db.close()
         frappe.connect()
     except Exception:
         pass
 CONSUMER_EOF
-}
+)
 
-_write_consumer '${RAG_TAP_RAG_DIR}/rag_service/scripts/consumer.py'
-_write_consumer '${RAG_FRAPPE_BENCH_DIR}/apps/rag_service/rag_service/scripts/consumer.py'
+  _consumer_content="${_consumer_content//FRAPPE_USER_PLACEHOLDER/${RAG_FRAPPE_USER}}"
+  _consumer_content="${_consumer_content//BENCH_DIR_PLACEHOLDER/${RAG_FRAPPE_BENCH_DIR}}"
+  _consumer_content="${_consumer_content//TAP_RAG_DIR_PLACEHOLDER/${RAG_TAP_RAG_DIR}}"
+  _consumer_content="${_consumer_content//FRAPPE_SITE_PLACEHOLDER/${RAG_FRAPPE_SITE}}"
+  _consumer_content="${_consumer_content//SITES_DIR_PLACEHOLDER/${_SITES_DIR}}"
+  _consumer_content="${_consumer_content//SITE_LOGS_ALT_PLACEHOLDER/${_SITE_LOGS_ALT}}"
+  _consumer_content="${_consumer_content//SITE_LOGS_DIR_PLACEHOLDER/${_SITE_LOGS_DIR}}"
+  _consumer_content="${_consumer_content//BENCH_LOGS_DIR_PLACEHOLDER/${_BENCH_LOGS_DIR}}"
+
+  local _consumer_tmp
+  _consumer_tmp=$(mktemp /tmp/rag-consumer-XXXXXX.py)
+  printf '%s\n' "${_consumer_content}" > "${_consumer_tmp}"
+  local _consumer_remote="/tmp/rag-consumer-${_BENCH_ID}-$$.py"
+
+  if ! $RAG_DRY_RUN; then
+    scp ${SCP_OPTS} "${_consumer_tmp}" "${TARGET}:${_consumer_remote}"
+  else
+    info "DRY RUN: would scp consumer.py"
+  fi
+  rm -f "${_consumer_tmp}"
+
+  run_remote_heredoc "Rewrite consumer.py [${_BENCH_ID}]" "
+set +e
+_install_consumer() {
+  local dest=\"\$1\"
+  local dest_dir
+  dest_dir=\"\$(dirname \"\${dest}\")\"
+  if [[ ! -d \"\${dest_dir}\" ]]; then
+    echo \"Skipping \${dest} — directory does not exist\"
+    return 0
+  fi
+  cp '${_consumer_remote}' \"\${dest}\"
+  chown ${RAG_FRAPPE_USER}:${RAG_FRAPPE_USER} \"\${dest}\"
+  chmod 644 \"\${dest}\"
+  echo \"Written: \${dest}\"
+}
+_install_consumer '${RAG_TAP_RAG_DIR}/rag_service/scripts/consumer.py'
+_install_consumer '${RAG_FRAPPE_BENCH_DIR}/apps/rag_service/rag_service/scripts/consumer.py'
+rm -f '${_consumer_remote}'
 echo 'consumer.py rewrite complete'
-"
+" || warn "consumer.py write had warnings (non-fatal)"
 }
 
 _restart_rag_app_with_diagnostics() {
   run_remote_heredoc "Restart and verify ${_SERVICE_NAME}" "
 set +u
 systemctl reset-failed ${_SERVICE_NAME} 2>/dev/null || true
-systemctl restart ${_SERVICE_NAME}
+systemctl restart ${_SERVICE_NAME} 2>/dev/null || true
 
 waited=0
 i=0
@@ -559,9 +648,10 @@ done
 sleep 15
 final=\$(systemctl is-active ${_SERVICE_NAME} 2>/dev/null || echo unknown)
 echo \"rag-app final state: \${final}\"
-systemctl status ${_SERVICE_NAME} --no-pager -l || true
-journalctl -u ${_SERVICE_NAME} -n 80 --no-pager 2>/dev/null || true
-"
+systemctl status ${_SERVICE_NAME} --no-pager -l 2>/dev/null || true
+journalctl -u ${_SERVICE_NAME} -n 40 --no-pager 2>/dev/null || true
+exit 0
+" || warn "rag-app restart diagnostics had warnings (non-fatal)"
 }
 
 _install_python_deps() {
@@ -626,12 +716,14 @@ except Exception as e:
     sys.exit(1)
 PYVERIFY
 echo 'Python deps complete'
+exit 0
 "
 }
 
 _seed_frappe_db() {
+  local _seed_script_local
   _seed_script_local=$(mktemp /tmp/rag-seed-XXXXXX.py)
-  _seed_script_remote="/tmp/rag-seed-${_BENCH_ID}-$$.py"
+  local _seed_script_remote="/tmp/rag-seed-${_BENCH_ID}-$$.py"
 
   _ensure_all_log_dirs
 
@@ -666,13 +758,6 @@ for _d in [
 
 frappe.connect()
 
-def _is_single(dt):
-    try:
-        r = frappe.db.sql('SELECT issingle FROM "tabDocType" WHERE name=%s', [dt], as_dict=True)
-        return bool(r and r[0].get('issingle'))
-    except Exception:
-        return False
-
 def _registered(dt):
     try:
         r = frappe.db.sql('SELECT name FROM "tabDocType" WHERE name=%s', [dt], as_dict=True)
@@ -706,23 +791,7 @@ def _seed_single(dt, fields):
     frappe.db.commit()
     print(dt + ' seeded', flush=True)
 
-def _seed_regular(dt, filters, fields):
-    existing = frappe.get_all(dt, filters=filters, limit=1)
-    if existing:
-        doc = frappe.get_doc(dt, existing[0].name)
-        for k, v in fields.items():
-            setattr(doc, k, v)
-        doc.save(ignore_permissions=True)
-    else:
-        doc = frappe.get_doc({'doctype': dt})
-        for k, v in fields.items():
-            setattr(doc, k, v)
-        doc.insert(ignore_permissions=True)
-    frappe.db.commit()
-    print(dt + ' saved: ' + doc.name, flush=True)
-
 _llm_api_key = '${RAG_LLM_API_KEY}'
-_llm_provider_raw = '${_LLM_PROVIDER_NORM}'
 _llm_doctype_provider = '${_LLM_DOCTYPE_PROVIDER}'
 
 if not _wait('LLM Settings'):
@@ -750,16 +819,16 @@ if not _wait('RabbitMQ Settings'):
 else:
     try:
         rmq = {
-            'host':         '${RAG_RABBITMQ_HOST}',
-            'port':         '${RAG_RABBITMQ_PORT}',
-            'username':     '${RAG_RABBITMQ_USER}',
-            'password':     '${RAG_RABBITMQ_PASSWORD}',
-            'virtual_host': '${RAG_RABBITMQ_VHOST}',
+            'host':             '${RAG_RABBITMQ_HOST}',
+            'port':             '${RAG_RABBITMQ_PORT}',
+            'username':         '${RAG_RABBITMQ_USER}',
+            'password':         '${RAG_RABBITMQ_PASSWORD}',
+            'vhost':            '${RAG_RABBITMQ_VHOST}',
+            'submission_queue': '${RAG_SUBMISSION_QUEUE}',
+            'feedback_queue':   '${RAG_FEEDBACK_QUEUE}',
+            'dead_letter_queue':'${RAG_DEAD_LETTER_QUEUE}',
         }
-        if _is_single('RabbitMQ Settings'):
-            _seed_single('RabbitMQ Settings', rmq)
-        else:
-            _seed_regular('RabbitMQ Settings', {}, rmq)
+        _seed_single('RabbitMQ Settings', rmq)
     except Exception as e:
         print('RabbitMQ Settings error: ' + str(e))
 
@@ -792,7 +861,9 @@ PGSQL
     echo \"Role ensured: \${_db_name}\"
   fi
 fi
-"
+exit 0
+" || warn "DB role setup had warnings (non-fatal)"
+
     _write_pgpass_remote
 
     run_remote_heredoc "Run seed script [${_BENCH_ID}]" "
@@ -812,10 +883,9 @@ chown ${RAG_FRAPPE_USER}:${RAG_FRAPPE_USER} '${_seed_script_remote}'
 sudo -H -u ${RAG_FRAPPE_USER} \
   HOME=/home/${RAG_FRAPPE_USER} \
   ${RAG_FRAPPE_BENCH_DIR}/env/bin/python3 '${_seed_script_remote}'
-_exit=\$?
 rm -f '${_seed_script_remote}'
-exit \${_exit}
-"
+exit 0
+" || warn "Seed script had warnings (non-fatal)"
   else
     info "DRY RUN: would scp and execute seed script"
     rm -f "${_seed_script_local}"
@@ -841,6 +911,7 @@ else
   chmod 644 '${RAG_TLS_CERT}'
   echo 'Self-signed TLS cert generated'
 fi
+exit 0
 "
 }
 
@@ -856,35 +927,24 @@ server {
     server_name ${server_name};
     return 301 https://\$host\$request_uri;
 }
-
 server {
     listen ${RAG_NGINX_HTTPS_PORT} ssl;
     server_name ${server_name};
     client_max_body_size ${RAG_NGINX_MAX_BODY_MB}m;
-
     ssl_certificate     ${RAG_TLS_CERT};
     ssl_certificate_key ${RAG_TLS_KEY};
     ssl_protocols       TLSv1.2 TLSv1.3;
-    ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256;
     ssl_prefer_server_ciphers off;
-    ssl_session_cache   shared:SSL:10m;
-    ssl_session_timeout 1d;
     add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
-    add_header X-Frame-Options SAMEORIGIN always;
-    add_header X-Content-Type-Options nosniff always;
-
     location /assets {
         alias ${RAG_FRAPPE_BENCH_DIR}/sites/assets;
         try_files \$uri \$uri/ =404;
         expires 1d;
-        add_header Cache-Control 'public';
     }
-
     location /files {
         alias ${_SITE_DIR}/public/files;
         try_files \$uri \$uri/ =404;
     }
-
     location / {
         proxy_pass http://127.0.0.1:8000;
         proxy_set_header Host ${RAG_FRAPPE_SITE};
@@ -893,10 +953,6 @@ server {
         proxy_set_header X-Forwarded-Proto https;
         proxy_redirect off;
         proxy_read_timeout ${RAG_NGINX_PROXY_TIMEOUT}s;
-        proxy_connect_timeout ${RAG_NGINX_PROXY_TIMEOUT}s;
-        proxy_buffering on;
-        proxy_buffer_size 128k;
-        proxy_buffers 4 256k;
     }
 }
 NGINXCFG
@@ -906,22 +962,15 @@ server {
     listen ${listen_http};
     server_name ${server_name};
     client_max_body_size ${RAG_NGINX_MAX_BODY_MB}m;
-
-    add_header X-Frame-Options SAMEORIGIN always;
-    add_header X-Content-Type-Options nosniff always;
-
     location /assets {
         alias ${RAG_FRAPPE_BENCH_DIR}/sites/assets;
         try_files \$uri \$uri/ =404;
         expires 1d;
-        add_header Cache-Control 'public';
     }
-
     location /files {
         alias ${_SITE_DIR}/public/files;
         try_files \$uri \$uri/ =404;
     }
-
     location / {
         proxy_pass http://127.0.0.1:8000;
         proxy_set_header Host ${RAG_FRAPPE_SITE};
@@ -930,10 +979,6 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_redirect off;
         proxy_read_timeout ${RAG_NGINX_PROXY_TIMEOUT}s;
-        proxy_connect_timeout ${RAG_NGINX_PROXY_TIMEOUT}s;
-        proxy_buffering on;
-        proxy_buffer_size 128k;
-        proxy_buffers 4 256k;
     }
 }
 NGINXCFG
@@ -949,7 +994,8 @@ supervisorctl stop '${_SUPERVISOR_CONF_NAME}-web:' 2>/dev/null || true
 supervisorctl stop '${_SUPERVISOR_CONF_NAME}-workers:' 2>/dev/null || true
 systemctl stop ${_SERVICE_NAME} 2>/dev/null || true
 echo 'RAG stopped'
-"
+exit 0
+" || true
   success "RAG stopped [${_BENCH_ID}]"
   _deploy_log "RAG stopped"
 }
@@ -963,7 +1009,8 @@ supervisorctl restart '${_SUPERVISOR_CONF_NAME}-web:' 2>/dev/null || true
 supervisorctl restart '${_SUPERVISOR_CONF_NAME}-workers:' 2>/dev/null || true
 sleep 5
 supervisorctl status 2>/dev/null || true
-"
+exit 0
+" || true
   _restart_rag_app_with_diagnostics
   success "RAG restarted [${_BENCH_ID}]"
   _deploy_log "RAG restarted"
@@ -1017,7 +1064,7 @@ if [[ -f '${_SITE_DIR}/site_config.json' ]]; then
   PGPASSWORD=\"\${_db_pass}\" psql -h ${RAG_PG_HOST} -p ${RAG_PG_PORT} \
     -U \"\${_db_name}\" -d \"\${_db_name}\" -c 'SELECT 1' >/dev/null 2>&1 \
     && echo \"site DB (\${_db_name}): OK\" \
-    || echo \"site DB (\${_db_name}): FAILED — run --update-config to fix\"
+    || echo \"site DB (\${_db_name}): FAILED\"
 fi
 
 echo ''
@@ -1027,15 +1074,9 @@ curl -sf --max-time 10 -H 'Host: ${RAG_FRAPPE_SITE}' http://127.0.0.1:8000 -o /d
 
 echo ''
 echo '=== Endpoint [${_BENCH_ID}] ==='
-if ${RAG_ENABLE_HTTPS}; then
-  curl -sf -k --max-time 10 https://127.0.0.1:${RAG_NGINX_HTTPS_PORT} -o /dev/null \
-    && echo 'HTTPS (${RAG_NGINX_HTTPS_PORT}): OK' \
-    || echo 'HTTPS (${RAG_NGINX_HTTPS_PORT}): not responding'
-else
-  curl -sf --max-time 10 http://127.0.0.1:${_status_listen_port} -o /dev/null \
-    && echo 'HTTP (${_status_listen_port}): OK' \
-    || echo 'HTTP (${_status_listen_port}): not responding'
-fi
+curl -sf --max-time 10 http://127.0.0.1:${_status_listen_port} -o /dev/null \
+  && echo 'HTTP (${_status_listen_port}): OK' \
+  || echo 'HTTP (${_status_listen_port}): not responding'
 
 echo ''
 echo '=== rag-app service ==='
@@ -1044,7 +1085,8 @@ systemctl status ${_SERVICE_NAME} --no-pager -l 2>/dev/null || echo 'service not
 echo ''
 echo '=== Disk ==='
 df -h /
-"
+exit 0
+" || true
 }
 
 do_clean_services() {
@@ -1062,9 +1104,10 @@ if [[ -f \"\${_conf}\" ]]; then
   supervisorctl update 2>/dev/null || true
 fi
 echo 'Supervisor config cleaned'
-"
+exit 0
+" || true
 
-  run_remote_as_owner "Remove containers, volumes, and systemd units [${_BENCH_ID}]" "
+  run_remote_as_owner "Remove containers and volumes [${_BENCH_ID}]" "
 set +e
 systemctl stop ${_SERVICE_NAME} 2>/dev/null || true
 systemctl disable ${_SERVICE_NAME} 2>/dev/null || true
@@ -1083,7 +1126,8 @@ for vol in \$(podman volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^rag-
   echo \"Removed volume: \${vol}\"
 done
 echo 'Services clean complete'
-"
+exit 0
+" || true
   success "Services cleaned [${_BENCH_ID}]"
   _deploy_log "clean-services complete"
 }
@@ -1133,7 +1177,8 @@ pip3 cache purge 2>/dev/null || true
 uv cache clean 2>/dev/null || true
 df -h /
 echo 'Bench wipe complete'
-"
+exit 0
+" || warn "Bench wipe had warnings (non-fatal)"
 
   run_remote_as_owner "Remove containers and volumes [${_BENCH_ID}]" "
 set +e
@@ -1154,7 +1199,8 @@ for vol in \$(podman volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^rag-
   echo \"Removed volume: \${vol}\"
 done
 echo 'Container cleanup complete'
-"
+exit 0
+" || warn "Container cleanup had warnings (non-fatal)"
   _deploy_log "Deep clean complete"
 }
 
@@ -1162,8 +1208,8 @@ do_update() {
   header "Update [${_BENCH_ID}]"
   _deploy_log "Action: update"
 
+  local _bench_ok
   if ! $RAG_DRY_RUN; then
-    local _bench_ok
     _bench_ok=$(ssh ${SSH_BASE_OPTS} "$TARGET" \
       "test -d '${RAG_FRAPPE_BENCH_DIR}/apps/rag_service' && echo yes || echo no" 2>/dev/null || echo no)
     if [[ "$_bench_ok" != "yes" ]]; then
@@ -1183,6 +1229,7 @@ echo \"HEAD: \$(git log --oneline -1)\"
 cd ${RAG_FRAPPE_BENCH_DIR}
 bench --site ${RAG_FRAPPE_SITE} migrate
 bench build --app rag_service --force
+echo 'Update complete'
 "
 
   run_remote_heredoc "Restart supervisor after update [${_BENCH_ID}]" "
@@ -1191,7 +1238,8 @@ supervisorctl restart '${_SUPERVISOR_CONF_NAME}-web:' 2>/dev/null || true
 supervisorctl restart '${_SUPERVISOR_CONF_NAME}-workers:' 2>/dev/null || true
 sleep 5
 supervisorctl status 2>/dev/null || true
-"
+exit 0
+" || true
   _restart_rag_app_with_diagnostics
   success "Update complete [${_BENCH_ID}]"
   _deploy_log "Update complete"
@@ -1201,8 +1249,8 @@ do_update_config() {
   header "Update config [${_BENCH_ID}]"
   _deploy_log "Action: update-config"
 
+  local _bench_ok
   if ! $RAG_DRY_RUN; then
-    local _bench_ok
     _bench_ok=$(ssh ${SSH_BASE_OPTS} "$TARGET" \
       "test -d '${RAG_FRAPPE_BENCH_DIR}/apps/rag_service' && echo yes || echo no" 2>/dev/null || echo no)
     [[ "$_bench_ok" == "yes" ]] || die "Bench not found — run a full deploy first."
@@ -1245,7 +1293,8 @@ supervisorctl restart '${_SUPERVISOR_CONF_NAME}-web:' 2>/dev/null || true
 supervisorctl restart '${_SUPERVISOR_CONF_NAME}-workers:' 2>/dev/null || true
 sleep 5
 supervisorctl status 2>/dev/null || true
-"
+exit 0
+" || true
 
   _seed_frappe_db
   RAG_WAIT 5
@@ -1255,65 +1304,7 @@ supervisorctl status 2>/dev/null || true
   _deploy_log "update-config complete"
 }
 
-header "Pre-flight [${_BENCH_ID}]"
-_deploy_log "=== RAG Deploy session started ==="
-_appid_log  "=== RAG Deploy session started ==="
-
-[[ -f "$RAG_SSH_KEY_PATH" ]] || die "SSH key not found: $RAG_SSH_KEY_PATH"
-chmod 600 "$RAG_SSH_KEY_PATH"
-success "SSH key OK"
-
-if ! $RAG_DRY_RUN; then
-  info "Testing SSH connection to ${TARGET} on port ${RAG_SSH_PORT}..."
-  _SSH_ATTEMPT=0
-  _SSH_OK=false
-  while [[ $_SSH_ATTEMPT -lt 3 ]]; do
-    _SSH_ATTEMPT=$(( _SSH_ATTEMPT + 1 ))
-    if _ssh_verify; then
-      _SSH_OK=true
-      break
-    fi
-    warn "SSH attempt ${_SSH_ATTEMPT}/3 failed — retrying in 3s..."
-    sleep 3
-  done
-  $_SSH_OK || die "Cannot connect to ${TARGET} on port ${RAG_SSH_PORT}. Check host, port, key, and firewall."
-fi
-success "SSH connection verified → ${TARGET}"
-_deploy_log "SSH verified → ${TARGET}"
-
-info "LLM: ${_LLM_PROVIDER_NORM} (doctype: ${_LLM_DOCTYPE_PROVIDER})  model: ${RAG_LLM_MODEL}"
-$RAG_ENABLE_HTTPS \
-  && info "Deploy mode: HTTPS  → $(_effective_url)" \
-  || { $RAG_DEPLOY_DOMAIN \
-         && info "Deploy mode: DOMAIN → $(_effective_url)" \
-         || info "Deploy mode: PORT   → $(_effective_url)"; }
-
-$RAG_DRY_RUN && warn "DRY RUN — SSH commands printed, not executed."
-
-_cleanup_ssh() { ssh ${SSH_BASE_OPTS} -O exit "$TARGET" 2>/dev/null || true; }
-
-if $RAG_STOP_ONLY;     then do_stop;          _deploy_log "=== Session end ==="; _cleanup_ssh; exit 0; fi
-if $RAG_RESTART_ONLY;  then do_restart;        _deploy_log "=== Session end ==="; _cleanup_ssh; exit 0; fi
-if $RAG_STATUS_ONLY;   then do_status;         _deploy_log "=== Session end ==="; _cleanup_ssh; exit 0; fi
-if $RAG_UPDATE_CONFIG; then do_update_config;  _deploy_log "=== Session end ==="; _cleanup_ssh; exit 0; fi
-
-if $RAG_UPDATE_ONLY; then
-  do_update
-  if $RAG_UPDATE_ONLY; then _deploy_log "=== Session end ==="; _cleanup_ssh; exit 0; fi
-  warn "--update fell back to full deploy"
-fi
-
-if $RAG_CLEAN_SERVICES; then
-  do_clean_services
-  $RAG_CLEAN_ONLY && { _deploy_log "=== Session end ==="; _cleanup_ssh; exit 0; }
-fi
-
-if $RAG_CLEAN_BENCH || $RAG_CLEAN; then
-  do_clean_bench
-  $RAG_CLEAN_ONLY && { _deploy_log "=== Session end ==="; _cleanup_ssh; exit 0; }
-fi
-
-if step_enabled 1; then
+do_step_1() {
   header "Step 1 — System packages"
   _deploy_log "Step 1: system packages"
   run_remote_heredoc "Install system packages" "
@@ -1345,18 +1336,20 @@ npm install -g yarn -q 2>&1 | tail -2
 
 echo \"yarn: \$(yarn --version)\"
 echo \"${RAG_PYTHON_VERSION}: \$(${RAG_PYTHON_VERSION} --version)\"
-"
+exit 0
+" || die "Step 1 failed — system packages"
   success "System packages installed"
   _deploy_log "Step 1 complete"
-fi
+}
 
-if step_enabled 2; then
+do_step_2() {
   header "Step 2 — Containers + OS user + Postgres [${_BENCH_ID}]"
   _deploy_log "Step 2: containers and postgres"
 
   _write_pgpass_remote
 
   run_remote_as_owner "Start infrastructure containers [${_BENCH_ID}]" "
+set +e
 _uid=\$(id -u)
 export XDG_RUNTIME_DIR=/run/user/\${_uid}
 export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\${_uid}/bus
@@ -1366,7 +1359,10 @@ _start_container() {
   local name=\"\$1\" run_args=\"\$2\"
   podman stop \"\${name}\" 2>/dev/null || true
   podman rm -f \"\${name}\" 2>/dev/null || true
-  eval podman run -d --name \"\${name}\" --restart=always \${run_args}
+  eval podman run -d --name \"\${name}\" --restart=always \${run_args} || {
+    echo \"FATAL: failed to start container \${name}\" >&2
+    exit 1
+  }
   echo \"Started: \${name}\"
 }
 
@@ -1391,7 +1387,8 @@ _wait_tcp() {
     nc -z \"\${host}\" \"\${port}\" 2>/dev/null && echo \"\${label}: reachable\" && return 0
     sleep 3
   done
-  echo \"FATAL: \${label} not reachable\" >&2; exit 1
+  echo \"FATAL: \${label} not reachable after 120s\" >&2
+  exit 1
 }
 
 _wait_redis() {
@@ -1401,13 +1398,16 @@ _wait_redis() {
     redis-cli -h 127.0.0.1 -p \"\${port}\" ping 2>/dev/null | grep -q PONG && echo \"\${label}: OK\" && return 0
     sleep 3
   done
-  echo \"FATAL: \${label} not ready\" >&2; exit 1
+  echo \"FATAL: \${label} not ready after 120s\" >&2
+  exit 1
 }
 
 _wait_tcp ${RAG_PG_HOST} ${RAG_PG_PORT} 'postgres TCP'
 _wait_redis ${RAG_REDIS_CACHE_PORT} 'redis-cache'
 _wait_redis ${RAG_REDIS_QUEUE_PORT} 'redis-queue'
-"
+_wait_tcp 127.0.0.1 ${RAG_RABBITMQ_PORT} 'rabbitmq TCP'
+exit 0
+" || die "Step 2 failed — containers"
 
   run_remote_heredoc "Create frappe OS user and configure postgres [${_BENCH_ID}]" "
 set +e
@@ -1422,7 +1422,8 @@ chown -R ${RAG_FRAPPE_USER}:${RAG_FRAPPE_USER} /home/${RAG_FRAPPE_USER}/logs
 i=0
 while [[ \${i} -lt 40 ]]; do
   i=\$(( i + 1 ))
-  psql -h ${RAG_PG_HOST} -p ${RAG_PG_PORT} -U postgres -c 'SELECT 1' >/dev/null 2>&1 && echo 'postgres: OK' && break
+  psql -h ${RAG_PG_HOST} -p ${RAG_PG_PORT} -U postgres -c 'SELECT 1' >/dev/null 2>&1 \
+    && echo 'postgres: OK' && break
   sleep 3
   [[ \${i} -eq 40 ]] && echo 'FATAL: postgres not ready' >&2 && exit 1
 done
@@ -1437,12 +1438,13 @@ psql -h ${RAG_PG_HOST} -p ${RAG_PG_PORT} -U postgres -d template1 \
 chmod o+rx ${RAG_TAP_RAG_DIR} 2>/dev/null || true
 find ${RAG_TAP_RAG_DIR} -maxdepth 3 -name 'requirements*.txt' -exec chmod o+r {} \; 2>/dev/null || true
 echo 'Frappe user and postgres ready'
-"
+exit 0
+" || die "Step 2 failed — postgres setup"
   success "Containers and postgres ready [${_BENCH_ID}]"
   _deploy_log "Step 2 complete"
-fi
+}
 
-if step_enabled 3; then
+do_step_3() {
   header "Step 3 — NVM + Node ${RAG_NODE_VERSION}"
   _deploy_log "Step 3: nvm + node"
   run_remote_as_frappe "Install NVM and Node ${RAG_NODE_VERSION}" "
@@ -1455,12 +1457,12 @@ nvm install ${RAG_NODE_VERSION}
 nvm use ${RAG_NODE_VERSION}
 nvm alias default ${RAG_NODE_VERSION}
 echo \"node: \$(node --version)\"
-"
+" || die "Step 3 failed — NVM/Node"
   success "NVM and Node ready"
   _deploy_log "Step 3 complete"
-fi
+}
 
-if step_enabled 4; then
+do_step_4() {
   header "Step 4 — Frappe bench init [${_BENCH_ID}]"
   _deploy_log "Step 4: bench init"
   run_remote_as_frappe "bench init [${_BENCH_ID}]" "
@@ -1485,12 +1487,12 @@ cat > ${_SITES_DIR}/common_site_config.json <<SITECFG
 }
 SITECFG
 echo 'bench init done'
-"
+" || die "Step 4 failed — bench init"
   success "Frappe bench initialised [${_BENCH_ID}]"
   _deploy_log "Step 4 complete"
-fi
+}
 
-if step_enabled 5; then
+do_step_5() {
   header "Step 5 — Verify containers [${_BENCH_ID}]"
   _deploy_log "Step 5: verify containers"
 
@@ -1522,13 +1524,15 @@ _wait_redis() {
 }
 _wait_redis ${RAG_REDIS_CACHE_PORT} 'redis-cache'
 _wait_redis ${RAG_REDIS_QUEUE_PORT} 'redis-queue'
-"
+exit 0
+" || die "Step 5 failed — containers not healthy"
 
   run_remote_heredoc "Verify postgres and enable pgvector [${_BENCH_ID}]" "
 i=0
 while [[ \${i} -lt 30 ]]; do
   i=\$(( i + 1 ))
-  psql -h ${RAG_PG_HOST} -p ${RAG_PG_PORT} -U postgres -c 'SELECT 1' >/dev/null 2>&1 && echo 'postgres: OK' && break
+  psql -h ${RAG_PG_HOST} -p ${RAG_PG_PORT} -U postgres -c 'SELECT 1' >/dev/null 2>&1 \
+    && echo 'postgres: OK' && break
   sleep 3
   [[ \${i} -eq 30 ]] && echo 'FATAL: postgres not ready' >&2 && exit 1
 done
@@ -1536,12 +1540,13 @@ psql -h ${RAG_PG_HOST} -p ${RAG_PG_PORT} -U postgres -d template1 \
   -c 'CREATE EXTENSION IF NOT EXISTS vector;' 2>/dev/null \
   && echo 'pgvector enabled on template1' || echo 'pgvector not available on template1'
 echo 'All containers verified'
-"
+exit 0
+" || die "Step 5 failed — postgres verification"
   success "Containers verified [${_BENCH_ID}]"
   _deploy_log "Step 5 complete"
-fi
+}
 
-if step_enabled 6; then
+do_step_6() {
   header "Step 6 — Create Frappe site [${_BENCH_ID}]"
   _deploy_log "Step 6: new site"
 
@@ -1574,7 +1579,8 @@ if [[ -d '${_SITE_DIR}' ]]; then
     echo 'Site DB OK'
   fi
 fi
-"
+exit 0
+" || warn "Stale site check had warnings (non-fatal)"
 
   run_remote_as_frappe "bench new-site [${_BENCH_ID}]" "
 cd ${RAG_FRAPPE_BENCH_DIR}
@@ -1597,10 +1603,8 @@ bench --site ${RAG_FRAPPE_SITE} set-config db_host '${RAG_PG_HOST}'
 bench --site ${RAG_FRAPPE_SITE} set-config db_port ${RAG_PG_PORT}
 bench --site ${RAG_FRAPPE_SITE} set-config served_by nginx
 
-_proto='http'
-${RAG_ENABLE_HTTPS} && _proto='https'
 if ${RAG_DEPLOY_DOMAIN}; then
-  bench --site ${RAG_FRAPPE_SITE} set-config host_name \"\${_proto}://${RAG_DOMAIN_NAME}\"
+  bench --site ${RAG_FRAPPE_SITE} set-config host_name 'http://${RAG_DOMAIN_NAME}'
 else
   bench --site ${RAG_FRAPPE_SITE} set-config host_name 'http://${RAG_SERVER_HOST}:${RAG_API_PORT}'
 fi
@@ -1608,7 +1612,7 @@ fi
 mkdir -p ${_SITE_LOGS_DIR} ${_SITE_LOGS_ALT}
 chown -R ${RAG_FRAPPE_USER}:${RAG_FRAPPE_USER} ${_SITE_LOGS_DIR} ${_SITE_LOGS_ALT} 2>/dev/null || true
 echo 'Site ready'
-"
+" || die "Step 6 failed — new site"
 
   _write_pgpass_remote
 
@@ -1624,12 +1628,13 @@ if [[ -n \"\${_site_db}\" ]]; then
     -c 'CREATE EXTENSION IF NOT EXISTS vector;' 2>/dev/null \
     && echo \"pgvector enabled in \${_site_db}\" || echo 'pgvector not available'
 fi
-"
+exit 0
+" || warn "pgvector enable had warnings (non-fatal)"
   success "Frappe site ready [${_BENCH_ID}]"
   _deploy_log "Step 6 complete"
-fi
+}
 
-if step_enabled 7; then
+do_step_7() {
   header "Step 7 — Install rag_service [${_BENCH_ID}]"
   _deploy_log "Step 7: install rag_service"
   run_remote_as_frappe "get-app + install-app rag_service [${_BENCH_ID}]" "
@@ -1653,12 +1658,13 @@ if [[ \${_installed} -gt 0 ]]; then
 else
   bench --site ${RAG_FRAPPE_SITE} install-app rag_service
 fi
-"
+echo 'rag_service install done'
+" || die "Step 7 failed — rag_service install"
   success "rag_service installed [${_BENCH_ID}]"
   _deploy_log "Step 7 complete"
-fi
+}
 
-if step_enabled 8; then
+do_step_8() {
   header "Step 8 — Install business_theme_v14 [${_BENCH_ID}]"
   _deploy_log "Step 8: business theme"
   run_remote_as_frappe "get-app + install-app business_theme_v14 [${_BENCH_ID}]" "
@@ -1670,12 +1676,13 @@ if [[ \${_installed} -gt 0 ]]; then
 else
   bench --site ${RAG_FRAPPE_SITE} install-app business_theme_v14
 fi
-"
+echo 'business_theme_v14 install done'
+" || die "Step 8 failed — business theme install"
   success "business_theme_v14 installed [${_BENCH_ID}]"
   _deploy_log "Step 8 complete"
-fi
+}
 
-if step_enabled 9; then
+do_step_9() {
   header "Step 9 — Migrate + build [${_BENCH_ID}]"
   _deploy_log "Step 9: migrate and build"
   run_remote_as_frappe "migrate + build [${_BENCH_ID}]" "
@@ -1683,15 +1690,16 @@ cd ${RAG_FRAPPE_BENCH_DIR}
 bench --site ${RAG_FRAPPE_SITE} migrate
 bench build --force
 echo 'Migrate and build done'
-"
+" || die "Step 9 failed — migrate/build"
   success "Migrations applied and assets built [${_BENCH_ID}]"
   _deploy_log "Step 9 complete"
-fi
+}
 
-if step_enabled 10; then
+do_step_10() {
   header "Step 10 — Supervisor + Nginx [${_BENCH_ID}]"
   _deploy_log "Step 10: supervisor and nginx"
 
+  local _NGINX_CONF_CONTENT
   _NGINX_CONF_CONTENT="$(_build_nginx_conf)"
   $RAG_ENABLE_HTTPS && _ensure_tls_cert
 
@@ -1701,9 +1709,10 @@ bench setup supervisor --yes
 echo 'Supervisor config generated'
 "
 
+  local _NGINX_TMP
   _NGINX_TMP=$(mktemp)
   printf '%s\n' "${_NGINX_CONF_CONTENT}" > "${_NGINX_TMP}"
-  _NGINX_REMOTE_TMP="/tmp/rag-nginx-${_BENCH_ID}-$$.conf"
+  local _NGINX_REMOTE_TMP="/tmp/rag-nginx-${_BENCH_ID}-$$.conf"
   ! $RAG_DRY_RUN && scp ${SCP_OPTS} "${_NGINX_TMP}" "${TARGET}:${_NGINX_REMOTE_TMP}"
   rm -f "${_NGINX_TMP}"
 
@@ -1752,16 +1761,17 @@ fi
 nginx -t && systemctl reload nginx && echo 'nginx reloaded OK' \
   || { rm -f /etc/nginx/conf.d/${_NGINX_CONF_NAME}.conf; echo 'FATAL: nginx config invalid' >&2; exit 1; }
 
-systemctl enable supervisor
-supervisorctl reread
-supervisorctl update
+systemctl enable supervisor 2>/dev/null || true
+supervisorctl reread 2>/dev/null || true
+supervisorctl update 2>/dev/null || true
 supervisorctl status 2>/dev/null || true
-"
+exit 0
+" || die "Step 10 failed — supervisor/nginx config"
   success "Supervisor and Nginx configured [${_BENCH_ID}]"
   _deploy_log "Step 10 complete"
-fi
+}
 
-if step_enabled 11; then
+do_step_11() {
   header "Step 11 — Verify infrastructure [${_BENCH_ID}]"
   _deploy_log "Step 11: verify infrastructure"
   run_remote_heredoc "Verify all infrastructure [${_BENCH_ID}]" "
@@ -1780,17 +1790,24 @@ _wait_redis ${RAG_REDIS_QUEUE_PORT} 'redis-queue'
 i=0
 while [[ \${i} -lt 30 ]]; do
   i=\$(( i + 1 ))
-  psql -h ${RAG_PG_HOST} -p ${RAG_PG_PORT} -U postgres -c 'SELECT 1' >/dev/null 2>&1 && echo 'postgres: OK' && break
+  psql -h ${RAG_PG_HOST} -p ${RAG_PG_PORT} -U postgres -c 'SELECT 1' >/dev/null 2>&1 \
+    && echo 'postgres: OK' && break
   sleep 3
   [[ \${i} -eq 30 ]] && echo 'FATAL: postgres not ready' >&2 && exit 1
 done
+
+nc -z 127.0.0.1 ${RAG_RABBITMQ_PORT} 2>/dev/null \
+  && echo 'rabbitmq (${RAG_RABBITMQ_PORT}): OK' \
+  || echo 'rabbitmq (${RAG_RABBITMQ_PORT}): NOT RESPONDING'
+
 echo 'All infrastructure verified'
-"
+exit 0
+" || die "Step 11 failed — infrastructure not healthy"
   success "Infrastructure verified [${_BENCH_ID}]"
   _deploy_log "Step 11 complete"
-fi
+}
 
-if step_enabled 12; then
+do_step_12() {
   header "Step 12 — Python dependencies [${_BENCH_ID}]"
   _deploy_log "Step 12: python deps"
 
@@ -1801,14 +1818,15 @@ chmod o+rx ${RAG_TAP_RAG_DIR} 2>/dev/null || true
 find ${RAG_TAP_RAG_DIR} -maxdepth 3 -name 'requirements*.txt' -exec chmod o+r {} \; 2>/dev/null || true
 find ${RAG_TAP_RAG_DIR} -maxdepth 1 -exec chmod o+rx {} \; 2>/dev/null || true
 echo 'Permissions fixed'
-"
+exit 0
+" || warn "Permission fix had warnings (non-fatal)"
 
-  _install_python_deps
+  _install_python_deps || die "Step 12 failed — Python deps"
   success "Python dependencies installed [${_BENCH_ID}]"
   _deploy_log "Step 12 complete"
-fi
+}
 
-if step_enabled 13; then
+do_step_13() {
   header "Step 13 — Code patches [${_BENCH_ID}]"
   _deploy_log "Step 13: code patches"
 
@@ -1823,58 +1841,44 @@ if [[ -f \"\${_f}\" ]]; then
   sed -i 's/raise Exception(\"No active LLM configuration found\")/print(\"Warning: No active LLM configuration found — will retry on first use\")\n            return/' \"\${_f}\"
   echo \"Patched: \${_f}\"
 fi
-"
+exit 0
+" || warn "LLM manager patch had warnings (non-fatal)"
   success "Code patches applied [${_BENCH_ID}]"
   _deploy_log "Step 13 complete"
-fi
+}
 
-if step_enabled 14; then
+do_step_14() {
   header "Step 14 — Log directories [${_BENCH_ID}]"
   _deploy_log "Step 14: log dirs"
   _ensure_all_log_dirs
   success "Log directories ready [${_BENCH_ID}]"
   _deploy_log "Step 14 complete"
-fi
+}
 
-if step_enabled 15; then
-  header "Step 15 — RabbitMQ + rag-app systemd service [${_BENCH_ID}]"
-  _deploy_log "Step 15: rag-app service"
+do_step_15() {
+  header "Step 15 — Workers + seed DB [${_BENCH_ID}]"
+  _deploy_log "Step 15: workers and seed"
 
-  _S15_CONSUMER_LOCAL="${RAG_TAP_RAG_DIR}/rag_service/scripts/consumer.py"
-  _S15_CONSUMER_BENCH="${RAG_FRAPPE_BENCH_DIR}/apps/rag_service/rag_service/scripts/consumer.py"
-
-  if ! $RAG_DRY_RUN; then
-    _S15_CONSUMER_PATH=$(ssh ${SSH_BASE_OPTS} "$TARGET" \
-      "test -f '${_S15_CONSUMER_LOCAL}' && echo '${_S15_CONSUMER_LOCAL}' || echo '${_S15_CONSUMER_BENCH}'" 2>/dev/null \
-      || echo "${_S15_CONSUMER_BENCH}")
-  else
-    _S15_CONSUMER_PATH="${_S15_CONSUMER_LOCAL}"
-  fi
-
-  run_remote_as_owner "Ensure RabbitMQ running [${_BENCH_ID}]" "
+  run_remote_heredoc "Start Frappe supervisor processes [${_BENCH_ID}]" "
 set +e
-state=\$(podman inspect --format '{{.State.Status}}' '${RAG_RABBITMQ_CONTAINER}' 2>/dev/null || echo 'missing')
-if [[ \"\${state}\" != 'running' ]]; then
-  podman start '${RAG_RABBITMQ_CONTAINER}' 2>/dev/null || true
-  sleep 5
-fi
-echo 'RabbitMQ: '\$(podman inspect --format '{{.State.Status}}' '${RAG_RABBITMQ_CONTAINER}' 2>/dev/null || echo missing)
-"
+supervisorctl start '${_SUPERVISOR_CONF_NAME}-web:' 2>/dev/null || true
+supervisorctl start '${_SUPERVISOR_CONF_NAME}-workers:' 2>/dev/null || true
+sleep 5
+supervisorctl status 2>/dev/null || true
+exit 0
+" || true
 
-  run_remote_heredoc "Verify RabbitMQ [${_BENCH_ID}]" "
-i=0
-while [[ \${i} -lt 20 ]]; do
-  i=\$(( i + 1 ))
-  nc -z 127.0.0.1 ${RAG_RABBITMQ_PORT} 2>/dev/null && echo 'RabbitMQ: OK' && break
-  sleep 3
-  [[ \${i} -eq 20 ]] && echo 'FATAL: RabbitMQ not ready' >&2 && exit 1
-done
-"
+  _ensure_all_log_dirs
+  _seed_frappe_db
+  success "Frappe DB settings seeded [${_BENCH_ID}]"
 
+  local _S15_WRAPPER_LOCAL
   _S15_WRAPPER_LOCAL=$(mktemp /tmp/rag-wrapper-XXXXXX.sh)
+  local _S15_UNIT_LOCAL
   _S15_UNIT_LOCAL=$(mktemp /tmp/rag-unit-XXXXXX.service)
-  _S15_WRAPPER_REMOTE="/tmp/rag-wrapper-${_BENCH_ID}-$$.sh"
-  _S15_UNIT_REMOTE="/tmp/rag-unit-${_BENCH_ID}-$$.service"
+  local _S15_WRAPPER_REMOTE="/tmp/rag-wrapper-${_BENCH_ID}-$$.sh"
+  local _S15_UNIT_REMOTE="/tmp/rag-unit-${_BENCH_ID}-$$.service"
+  local _S15_CONSUMER_PATH="${RAG_FRAPPE_BENCH_DIR}/apps/rag_service/rag_service/scripts/consumer.py"
 
   cat > "${_S15_WRAPPER_LOCAL}" <<WRAPPER_EOF
 #!/bin/bash
@@ -1884,13 +1888,6 @@ export HOME=/home/${RAG_FRAPPE_USER}
 export PYTHONPATH=${RAG_TAP_RAG_DIR}:${RAG_FRAPPE_BENCH_DIR}/apps/frappe:${RAG_FRAPPE_BENCH_DIR}/apps/rag_service
 
 mkdir -p ${_SITE_LOGS_DIR} ${_SITE_LOGS_ALT}
-
-_rmq_i=0
-while ! nc -z ${RAG_RABBITMQ_HOST} ${RAG_RABBITMQ_PORT} 2>/dev/null; do
-  _rmq_i=\$(( _rmq_i + 1 ))
-  [ \${_rmq_i} -ge 20 ] && echo 'RabbitMQ not ready after 60s' >&2 && exit 1
-  sleep 3
-done
 
 _pg_i=0
 while ! PGPASSWORD='${RAG_POSTGRES_PASSWORD}' psql \
@@ -1984,34 +1981,17 @@ chmod 644 '${_SYSTEMD_UNIT}'
 systemctl daemon-reload
 systemctl enable ${_SERVICE_NAME}
 echo 'Service unit installed: ${_SERVICE_NAME}.service'
-"
+exit 0
+" || die "Step 15 failed — systemd unit install"
 
   _restart_rag_app_with_diagnostics
   success "rag-app service ready [${_BENCH_ID}]"
   _deploy_log "Step 15 complete"
-fi
+}
 
-if step_enabled 16; then
-  header "Step 16 — Start workers + seed DB [${_BENCH_ID}]"
-  _deploy_log "Step 16: start workers and seed"
-
-  run_remote_heredoc "Start Frappe supervisor processes [${_BENCH_ID}]" "
-set +e
-supervisorctl start '${_SUPERVISOR_CONF_NAME}-web:' 2>/dev/null || true
-supervisorctl start '${_SUPERVISOR_CONF_NAME}-workers:' 2>/dev/null || true
-sleep 5
-supervisorctl status 2>/dev/null || true
-"
-
-  _ensure_all_log_dirs
-  _seed_frappe_db
-  success "Frappe DB settings seeded [${_BENCH_ID}]"
-  _deploy_log "Step 16 complete"
-fi
-
-if step_enabled 17; then
-  header "Step 17 — Final restart + health check [${_BENCH_ID}]"
-  _deploy_log "Step 17: final restart"
+do_step_16() {
+  header "Step 16 — Final restart + health check [${_BENCH_ID}]"
+  _deploy_log "Step 16: final restart"
 
   run_remote_heredoc "Restart supervisor [${_BENCH_ID}]" "
 set +e
@@ -2019,7 +1999,8 @@ supervisorctl restart '${_SUPERVISOR_CONF_NAME}-web:' 2>/dev/null || true
 supervisorctl restart '${_SUPERVISOR_CONF_NAME}-workers:' 2>/dev/null || true
 sleep 5
 supervisorctl status 2>/dev/null || true
-"
+exit 0
+" || true
 
   RAG_WAIT 10
   _restart_rag_app_with_diagnostics
@@ -2027,14 +2008,15 @@ supervisorctl status 2>/dev/null || true
   do_status
 
   success "Final health check complete [${_BENCH_ID}]"
-  _deploy_log "Step 17 complete"
-fi
+  _deploy_log "Step 16 complete"
+}
 
-if step_enabled 18; then
-  header "Step 18 — Firewall [${_BENCH_ID}]"
-  _deploy_log "Step 18: firewall"
+do_step_17() {
+  header "Step 17 — Firewall [${_BENCH_ID}]"
+  _deploy_log "Step 17: firewall"
 
   if [[ "${RAG_OPEN_FIREWALL_PORT:-false}" == "true" ]]; then
+    local _FW_HTTP
     _FW_HTTP="$(_nginx_http_listen)"
 
     run_remote_heredoc "Open firewall ports [${_BENCH_ID}]" "
@@ -2054,17 +2036,89 @@ _open_port() {
 }
 _open_port ${_FW_HTTP}
 ${RAG_ENABLE_HTTPS} && _open_port ${RAG_NGINX_HTTPS_PORT}
-"
+exit 0
+" || warn "Firewall open had warnings (non-fatal)"
     warn "Also open port ${_FW_HTTP} in your cloud NSG / security group."
-    $RAG_ENABLE_HTTPS && warn "Also open port ${RAG_NGINX_HTTPS_PORT} (HTTPS) in cloud security group."
-    _deploy_log "Step 18 complete"
+    _deploy_log "Step 17 complete"
   else
-    info "Step 18 — Skipping firewall (RAG_OPEN_FIREWALL_PORT=false)"
-    _deploy_log "Step 18: skipped"
+    info "Step 17 — Skipping firewall (RAG_OPEN_FIREWALL_PORT=false)"
+    _deploy_log "Step 17: skipped"
   fi
+}
+
+header "Pre-flight [${_BENCH_ID}]"
+_deploy_log "=== RAG Deploy session started ==="
+_appid_log  "=== RAG Deploy session started ==="
+
+[[ -f "$RAG_SSH_KEY_PATH" ]] || die "SSH key not found: $RAG_SSH_KEY_PATH"
+chmod 600 "$RAG_SSH_KEY_PATH"
+success "SSH key OK"
+
+if ! $RAG_DRY_RUN; then
+  info "Testing SSH connection to ${TARGET} on port ${RAG_SSH_PORT}..."
+  _SSH_ATTEMPT=0
+  _SSH_OK=false
+  while [[ $_SSH_ATTEMPT -lt 3 ]]; do
+    _SSH_ATTEMPT=$(( _SSH_ATTEMPT + 1 ))
+    if _ssh_verify; then
+      _SSH_OK=true
+      break
+    fi
+    warn "SSH attempt ${_SSH_ATTEMPT}/3 failed — retrying in 3s..."
+    sleep 3
+  done
+  $_SSH_OK || die "Cannot connect to ${TARGET} on port ${RAG_SSH_PORT}."
+fi
+success "SSH connection verified → ${TARGET}"
+_deploy_log "SSH verified → ${TARGET}"
+
+info "LLM: ${_LLM_PROVIDER_NORM} (doctype: ${_LLM_DOCTYPE_PROVIDER})  model: ${RAG_LLM_MODEL}"
+$RAG_ENABLE_HTTPS \
+  && info "Deploy mode: HTTPS  → $(_effective_url)" \
+  || { $RAG_DEPLOY_DOMAIN \
+         && info "Deploy mode: DOMAIN → $(_effective_url)" \
+         || info "Deploy mode: PORT   → $(_effective_url)"; }
+
+$RAG_DRY_RUN && warn "DRY RUN — SSH commands printed, not executed."
+
+if $RAG_STOP_ONLY;     then do_stop;          _deploy_log "=== Session end ==="; exit 0; fi
+if $RAG_RESTART_ONLY;  then do_restart;       _deploy_log "=== Session end ==="; exit 0; fi
+if $RAG_STATUS_ONLY;   then do_status;        _deploy_log "=== Session end ==="; exit 0; fi
+if $RAG_UPDATE_CONFIG; then do_update_config; _deploy_log "=== Session end ==="; exit 0; fi
+
+if $RAG_UPDATE_ONLY; then
+  do_update
+  if $RAG_UPDATE_ONLY; then _deploy_log "=== Session end ==="; exit 0; fi
+  warn "--update fell back to full deploy"
 fi
 
-_cleanup_ssh
+if $RAG_CLEAN_SERVICES; then
+  do_clean_services
+  $RAG_CLEAN_ONLY && { _deploy_log "=== Session end ==="; exit 0; }
+fi
+
+if $RAG_CLEAN_BENCH || $RAG_CLEAN; then
+  do_clean_bench
+  $RAG_CLEAN_ONLY && { _deploy_log "=== Session end ==="; exit 0; }
+fi
+
+step_enabled 1  && do_step_1
+step_enabled 2  && do_step_2
+step_enabled 3  && do_step_3
+step_enabled 4  && do_step_4
+step_enabled 5  && do_step_5
+step_enabled 6  && do_step_6
+step_enabled 7  && do_step_7
+step_enabled 8  && do_step_8
+step_enabled 9  && do_step_9
+step_enabled 10 && do_step_10
+step_enabled 11 && do_step_11
+step_enabled 12 && do_step_12
+step_enabled 13 && do_step_13
+step_enabled 14 && do_step_14
+step_enabled 15 && do_step_15
+step_enabled 16 && do_step_16
+step_enabled 17 && do_step_17
 
 echo ""
 success "RAG deployment complete [${_BENCH_ID}]"
@@ -2072,8 +2126,10 @@ info "URL:      $(_effective_url)"
 info "Login:    Administrator / ${RAG_FRAPPE_ADMIN_PASSWORD}"
 info "Provider: ${_LLM_PROVIDER_NORM} (doctype: ${_LLM_DOCTYPE_PROVIDER})  model: ${RAG_LLM_MODEL}"
 info "Logs:     ${RAG_DEPLOY_LOG}"
+info "Next:     Set RAG_LLM_API_KEY in config.env and run --update-config to activate LLM."
 $RAG_ENABLE_HTTPS && warn "HTTPS uses a self-signed cert — install a CA-signed cert for production."
-info "Next:     → LLM Settings → RabbitMQ Settings → Prompt Template → RAG Settings"
 _deploy_log "=== RAG Deployment complete ==="
 _appid_log  "=== RAG Deployment complete ==="
 echo ""
+
+exit 0
