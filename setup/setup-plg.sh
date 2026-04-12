@@ -673,16 +673,29 @@ if step_enabled 5; then
   _deploy_log "Step 5: python venv"
   VENV_BODY="
 cd ${PLG_APP_DIR}
+
 if command -v ${PLG_PYTHON:-python3} &>/dev/null; then
   PYTHON_BIN=${PLG_PYTHON:-python3}
 else
   PYTHON_BIN=\$(command -v python3)
 fi
-\${PYTHON_BIN} -m venv venv
-source venv/bin/activate
-pip install --upgrade pip --quiet
-pip install -r requirements.txt --quiet
-echo \"Python: \$(python --version)  Packages: \$(pip list | wc -l)\"
+
+rm -rf venv
+
+\${PYTHON_BIN} -m venv --without-pip --system-site-packages=no venv
+
+ENSUREPIP_PACKAGES=\$(python3 -c 'import ensurepip; print(ensurepip._bundled_packages())' 2>/dev/null || true)
+venv/bin/python3 -m ensurepip --upgrade 2>/dev/null || {
+  curl -sSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+  venv/bin/python3 /tmp/get-pip.py --quiet
+  rm -f /tmp/get-pip.py
+}
+
+venv/bin/pip install --quiet --upgrade pip setuptools wheel
+
+venv/bin/pip install --quiet -r requirements.txt
+
+echo \"Python: \$(venv/bin/python3 --version)  Packages: \$(venv/bin/pip list | wc -l)\"
 "
   run_remote_heredoc "venv + deps" "$VENV_BODY"
   success "Python environment ready"
