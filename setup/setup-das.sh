@@ -98,8 +98,22 @@ fi
 
 chmod 600 "$PEM_FILE"
 
-SSH_OPTS="-i ${PEM_FILE} -p ${DASHBOARD_SSH_PORT} -o StrictHostKeyChecking=no -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=10"
-SCP_OPTS="-i ${PEM_FILE} -P ${DASHBOARD_SSH_PORT} -o StrictHostKeyChecking=no -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=10"
+purge_stale_host_key() {
+  local known_hosts="${HOME}/.ssh/known_hosts"
+  [[ ! -f "$known_hosts" ]] && return 0
+  local entries
+  entries=$(grep -c "^${DASHBOARD_HOST}" "$known_hosts" 2>/dev/null || true)
+  if [[ "$entries" -gt 0 ]]; then
+    ssh-keygen -f "$known_hosts" -R "${DASHBOARD_HOST}" 2>/dev/null || true
+    if [[ "${DASHBOARD_SSH_PORT}" != "22" ]]; then
+      ssh-keygen -f "$known_hosts" -R "[${DASHBOARD_HOST}]:${DASHBOARD_SSH_PORT}" 2>/dev/null || true
+    fi
+    info "Cleared stale host key for ${DASHBOARD_HOST}"
+  fi
+}
+
+SSH_OPTS="-i ${PEM_FILE} -p ${DASHBOARD_SSH_PORT} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=10"
+SCP_OPTS="-i ${PEM_FILE} -P ${DASHBOARD_SSH_PORT} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=10"
 TARGET="${DASHBOARD_USER}@${DASHBOARD_HOST}"
 
 ssh_with_retry() {
@@ -176,7 +190,7 @@ wait_for_ssh() {
 
 detect_remote_os() {
   info "Detecting remote OS..."
-  REMOTE_OS=$(ssh_with_retry bash -s -- <<'DETECT'
+  REMOTE_OS=$(ssh $SSH_OPTS "$TARGET" bash -s -- 2>/dev/null <<'DETECT'
 set +e
 if [[ -f /etc/os-release ]]; then
   . /etc/os-release
@@ -341,7 +355,10 @@ info "Target    : ${TARGET}"
 info "Install   : ${INSTALL_DIR}"
 info "Port      : ${DASHBOARD_PORT}"
 
-! $DRY_RUN && wait_for_ssh
+if ! $DRY_RUN; then
+  purge_stale_host_key
+  wait_for_ssh
+fi
 
 if $UPLOAD_ONLY; then
   header "Upload — replace scripts on server"

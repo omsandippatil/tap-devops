@@ -537,7 +537,8 @@ if [[ ! -f '${_ASSET_MANIFEST_FILE}' ]]; then
 fi
 _size=\$(wc -c < '${_ASSET_MANIFEST_FILE}' 2>/dev/null || echo 0)
 [[ \"\${_size}\" -lt 10 ]] && { echo 'FATAL: assets.json empty' >&2; exit 1; }
-python3 -c \"import json; json.load(open('${_ASSET_MANIFEST_FILE}')); print('assets.json valid JSON ('\${_size}' bytes)')\""
+python3 -c \"import json; json.load(open('${_ASSET_MANIFEST_FILE}'))\"
+echo \"assets.json valid JSON (\${_size} bytes)\""
 }
 
 _copy_asset_manifest_to_site() {
@@ -1423,10 +1424,12 @@ echo \"yarn: \$(yarn --version)\""
 
 _run_step4() {
   _install_supervisorctl_shim
+
   _run_heredoc_as_frappe "bench init" \
 "if [[ -d ${LMS_FRAPPE_BENCH_DIR} ]]; then
   echo 'bench dir exists — skipping init'
 else
+  export UV_LINK_MODE=copy
   bench init ${LMS_FRAPPE_BENCH_DIR} \
     --frappe-branch ${LMS_FRAPPE_BRANCH} \
     --python ${LMS_PYTHON_VERSION} \
@@ -1437,6 +1440,23 @@ fi
 mkdir -p ${_BENCH_LOGS_DIR} ${_SITES_DIR}/logs
 chown -R ${LMS_FRAPPE_USER}:${LMS_FRAPPE_USER} ${_BENCH_LOGS_DIR} ${_SITES_DIR}/logs 2>/dev/null || true
 echo 'bench init done'"
+
+  _run_heredoc_as_frappe "Install frappe Python dependencies" \
+"export UV_LINK_MODE=copy
+cd ${LMS_FRAPPE_BENCH_DIR}
+if [[ -f ${_VENV_DIR}/bin/activate ]]; then
+  source ${_VENV_DIR}/bin/activate
+else
+  ${LMS_PYTHON_VERSION} -m venv ${_VENV_DIR}
+  source ${_VENV_DIR}/bin/activate
+fi
+if command -v uv &>/dev/null; then
+  UV_LINK_MODE=copy uv pip install --upgrade -e apps/frappe --python ${_VENV_DIR}/bin/python
+else
+  pip install --upgrade -e apps/frappe -q
+fi
+python -c 'import importlib.metadata; v=importlib.metadata.version(\"werkzeug\"); print(\"werkzeug OK:\", v)'
+echo 'frappe deps installed'"
 
   _write_common_site_config
   _ok "Frappe bench initialised"
@@ -1773,7 +1793,7 @@ cat > \"\${_CONSUMER_WRAPPER}\" <<PYEOF
 import frappe
 frappe.init(site=\"${LMS_FRAPPE_SITE}\", sites_path=\"${_SITES_DIR}\")
 frappe.connect()
-from tap_lms.feedback_handler.feedback_consumer import FeedbackConsumer
+from tap_lms.feedback_consumer.feedback_consumer import FeedbackConsumer
 c = FeedbackConsumer()
 c.setup_rabbitmq()
 c.start_consuming()

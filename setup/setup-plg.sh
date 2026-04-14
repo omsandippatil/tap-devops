@@ -375,6 +375,10 @@ rm -rf \${HOME}/\$(basename ${PLG_APP_DIR})__staging
 find \${HOME} -maxdepth 1 -name \"\$(basename ${PLG_APP_DIR})__backup_*\" -type d -exec rm -rf {} + 2>/dev/null || true
 find ${PLG_APP_DIR%/*} -maxdepth 3 -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
 
+rm -rf \${HOME}/.cache/pip
+rm -rf \${HOME}/.cache/torch
+rm -rf \${HOME}/.local/lib/python*/site-packages/open_clip* 2>/dev/null || true
+
 echo ''
 echo '=== Remaining PLG containers ==='
 podman ps -a --filter name=plg 2>/dev/null || echo 'none'
@@ -459,6 +463,7 @@ find ${PLG_APP_DIR%/*} -maxdepth 3 -name '__pycache__' -type d -exec rm -rf {} +
 set +e
 rm -rf ${PLG_APP_DIR}/venv
 rm -rf \${HOME}/.cache/pip
+rm -rf \${HOME}/.cache/torch
 "
     success "Venv cleaned"
     did=1
@@ -682,9 +687,9 @@ fi
 
 rm -rf venv
 
-\${PYTHON_BIN} -m venv --without-pip --system-site-packages=no venv
+\${PYTHON_BIN} -m venv --upgrade-deps venv 2>/dev/null \
+  || \${PYTHON_BIN} -m venv venv
 
-ENSUREPIP_PACKAGES=\$(python3 -c 'import ensurepip; print(ensurepip._bundled_packages())' 2>/dev/null || true)
 venv/bin/python3 -m ensurepip --upgrade 2>/dev/null || {
   curl -sSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
   venv/bin/python3 /tmp/get-pip.py --quiet
