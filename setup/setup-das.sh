@@ -16,13 +16,9 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_FILE="${REPO_ROOT}/config.env"
 DASHBOARD_FILES="${REPO_ROOT}/dashboard"
 SETUP_FILES="${REPO_ROOT}/setup"
-INSTALL_DIR="/home/azureuser/tap-devops"
+INSTALL_DIR="${HOME}/tap-devops"
 SERVICE_NAME="tap-dashboard"
 
-DASHBOARD_HOST=""
-DASHBOARD_USER="azureuser"
-DASHBOARD_SSH_PORT=22
-PEM_FILE=""
 DASHBOARD_PORT=9000
 NODE_VERSION=20
 
@@ -39,15 +35,11 @@ usage() {
 Usage: $0 [OPTIONS]
 
 Options:
-  --host HOST          Remote server IP or hostname
-  --pem  PATH          Path to .pem private key file
-  --user USER          SSH username (default: azureuser)
-  --port PORT          SSH port (default: 22)
   --dashboard-port N   Dashboard HTTP port (default: 9000)
   --config FILE        Path to config.env (default: <repo-root>/config.env)
   --node-version N     Node.js version (default: 20)
-  --upload             Upload scripts only and replace on server
-  --update             Upload files and restart
+  --upload             Copy scripts and replace in install dir
+  --update             Copy files and restart service
   --restart            Restart service only
   --clean              Wipe then reinstall
   --clean-only         Stop service and delete all files, no reinstall
@@ -60,20 +52,16 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --host)           DASHBOARD_HOST="$2";     shift 2 ;;
-    --pem)            PEM_FILE="$2";           shift 2 ;;
-    --user)           DASHBOARD_USER="$2";     shift 2 ;;
-    --port)           DASHBOARD_SSH_PORT="$2"; shift 2 ;;
-    --dashboard-port) DASHBOARD_PORT="$2";     shift 2 ;;
-    --config)         CONFIG_FILE="$2";        shift 2 ;;
-    --node-version)   NODE_VERSION="$2";       shift 2 ;;
-    --upload)         UPLOAD_ONLY=true;        shift ;;
-    --update)         UPDATE_ONLY=true;        shift ;;
-    --restart)        RESTART_ONLY=true;       shift ;;
-    --clean)          CLEAN=true;              shift ;;
-    --clean-only)     CLEAN_ONLY=true;         shift ;;
-    --dry-run)        DRY_RUN=true;            shift ;;
-    --force)          FORCE=true;              shift ;;
+    --dashboard-port) DASHBOARD_PORT="$2";  shift 2 ;;
+    --config)         CONFIG_FILE="$2";     shift 2 ;;
+    --node-version)   NODE_VERSION="$2";    shift 2 ;;
+    --upload)         UPLOAD_ONLY=true;     shift ;;
+    --update)         UPDATE_ONLY=true;     shift ;;
+    --restart)        RESTART_ONLY=true;    shift ;;
+    --clean)          CLEAN=true;           shift ;;
+    --clean-only)     CLEAN_ONLY=true;      shift ;;
+    --dry-run)        DRY_RUN=true;         shift ;;
+    --force)          FORCE=true;           shift ;;
     --help)           usage ;;
     *) die "Unknown argument: $1" ;;
   esac
@@ -86,87 +74,49 @@ else
   warn "Config file not found: $CONFIG_FILE"
 fi
 
-[[ -n "${DASHBOARD_HOST:-}" ]] || DASHBOARD_HOST="${DASHBOARD_SERVER_HOST:-}"
-[[ -n "${PEM_FILE:-}" ]]       || PEM_FILE="${DASHBOARD_PEM_FILE:-}"
-[[ -n "${DASHBOARD_USER:-}" ]] || DASHBOARD_USER="${DASHBOARD_SERVER_USER:-azureuser}"
+DASHBOARD_PORT="${DASHBOARD_PORT:-${DASHBOARD_PORT:-9000}}"
 
-[[ -n "$DASHBOARD_HOST" ]] || die "DASHBOARD_HOST not set"
-[[ -n "$PEM_FILE" ]]       || die "PEM_FILE not set"
-[[ -f "$PEM_FILE" ]]       || die "PEM file not found: $PEM_FILE"
 [[ -d "$DASHBOARD_FILES" ]] || die "Dashboard source not found: ${DASHBOARD_FILES}"
 [[ -d "$SETUP_FILES" ]]    || die "Setup scripts dir not found: ${SETUP_FILES}"
 
-chmod 600 "$PEM_FILE"
-
-purge_stale_host_key() {
-  local known_hosts="${HOME}/.ssh/known_hosts"
-  [[ ! -f "$known_hosts" ]] && return 0
-  local entries
-  entries=$(grep -c "^${DASHBOARD_HOST}" "$known_hosts" 2>/dev/null || true)
-  if [[ "$entries" -gt 0 ]]; then
-    ssh-keygen -f "$known_hosts" -R "${DASHBOARD_HOST}" 2>/dev/null || true
-    if [[ "${DASHBOARD_SSH_PORT}" != "22" ]]; then
-      ssh-keygen -f "$known_hosts" -R "[${DASHBOARD_HOST}]:${DASHBOARD_SSH_PORT}" 2>/dev/null || true
-    fi
-    info "Cleared stale host key for ${DASHBOARD_HOST}"
+run() {
+  local desc="$1"; shift
+  info "Run: $desc"
+  if $DRY_RUN; then
+    echo -e "  ${YELLOW}[dry-run]${RESET} $desc"
+    return 0
   fi
+  "$@"
 }
 
-SSH_OPTS="-i ${PEM_FILE} -p ${DASHBOARD_SSH_PORT} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=10"
-SCP_OPTS="-i ${PEM_FILE} -P ${DASHBOARD_SSH_PORT} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=10"
-TARGET="${DASHBOARD_USER}@${DASHBOARD_HOST}"
-
-ssh_with_retry() {
-  local max=5 delay=8 attempt=1
-  while true; do
-    if ssh $SSH_OPTS "$TARGET" "$@" 2>&1; then
-      return 0
-    fi
-    local rc=$?
-    [[ $attempt -ge $max ]] && { error "SSH failed after $max attempts"; return $rc; }
-    warn "SSH attempt $attempt/$max failed — retrying in ${delay}s..."
-    attempt=$(( attempt + 1 ))
-    sleep $delay
-    delay=$(( delay + 4 ))
-  done
-}
-
-remote() {
+run_shell() {
   local desc="$1" body="$2"
-  info "Remote: $desc"
-  $DRY_RUN && { echo -e "  ${YELLOW}[dry-run]${RESET} $desc"; return 0; }
-  ssh_with_retry bash -s -- <<EOF
-set -euo pipefail
-${body}
-EOF
+  info "Step: $desc"
+  if $DRY_RUN; then
+    echo -e "  ${YELLOW}[dry-run]${RESET} $desc"
+    return 0
+  fi
+  bash -euo pipefail -c "$body"
 }
 
-remote_soft() {
+run_shell_soft() {
   local desc="$1" body="$2"
-  info "Remote: $desc"
-  $DRY_RUN && { echo -e "  ${YELLOW}[dry-run]${RESET} $desc"; return 0; }
-  ssh_with_retry bash -s -- <<EOF
-set +e
-${body}
-EOF
+  info "Step: $desc"
+  if $DRY_RUN; then
+    echo -e "  ${YELLOW}[dry-run]${RESET} $desc"
+    return 0
+  fi
+  bash +e -c "$body" || true
 }
 
-upload() {
+copy_file() {
   local src="$1" dst="$2"
-  info "Upload: $(basename "$src") → ${dst}"
-  $DRY_RUN && { echo -e "  ${YELLOW}[dry-run: scp $(basename "$src")]${RESET}"; return 0; }
-  local max=4 delay=6 attempt=1
-  while true; do
-    if scp $SCP_OPTS "$src" "${TARGET}:${dst}" 2>&1; then
-      return 0
-    fi
-    local rc=$?
-    [[ $attempt -ge $max ]] && { error "scp failed after $max attempts: $src"; return $rc; }
-    warn "scp attempt $attempt/$max failed — retrying in ${delay}s..."
-    attempt=$(( attempt + 1 ))
-    sleep $delay
-    delay=$(( delay + 4 ))
-  done
+  info "Copy: $(basename "$src") → ${dst}"
+  if $DRY_RUN; then
+    echo -e "  ${YELLOW}[dry-run: cp $(basename "$src")]${RESET}"
+    return 0
+  fi
+  cp "$src" "$dst"
 }
 
 confirm() {
@@ -176,43 +126,27 @@ confirm() {
   [[ "${ans,,}" == "y" ]] || { info "Aborted."; exit 0; }
 }
 
-wait_for_ssh() {
-  info "Waiting for SSH on ${DASHBOARD_HOST}:${DASHBOARD_SSH_PORT}..."
-  local max=18 delay=10 attempt=1
-  while true; do
-    ssh $SSH_OPTS "$TARGET" "echo SSH_OK" >/dev/null 2>&1 && { success "SSH ready"; return 0; }
-    [[ $attempt -ge $max ]] && die "SSH unavailable after $(( max * delay ))s"
-    warn "Attempt $attempt/$max — retrying in ${delay}s..."
-    attempt=$(( attempt + 1 ))
-    sleep $delay
-  done
-}
-
-detect_remote_os() {
-  info "Detecting remote OS..."
-  REMOTE_OS=$(ssh $SSH_OPTS "$TARGET" bash -s -- 2>/dev/null <<'DETECT'
-set +e
-if [[ -f /etc/os-release ]]; then
-  . /etc/os-release
-  echo "${ID}:${VERSION_ID}:${ID_LIKE:-}"
-elif [[ -f /etc/redhat-release ]]; then
-  echo "rhel:unknown:"
-elif [[ "$(uname)" == "Darwin" ]]; then
-  echo "darwin:$(sw_vers -productVersion):"
-else
-  echo "unknown:unknown:"
-fi
-DETECT
-  )
-  OS_ID="${REMOTE_OS%%:*}"
-  OS_REST="${REMOTE_OS#*:}"
-  OS_VER="${OS_REST%%:*}"
-  OS_LIKE="${OS_REST#*:}"
+detect_os() {
+  info "Detecting OS..."
+  if [[ -f /etc/os-release ]]; then
+    . /etc/os-release
+    OS_ID="${ID}"
+    OS_VER="${VERSION_ID:-unknown}"
+    OS_LIKE="${ID_LIKE:-}"
+  elif [[ "$(uname)" == "Darwin" ]]; then
+    OS_ID="darwin"
+    OS_VER="$(sw_vers -productVersion)"
+    OS_LIKE=""
+  else
+    OS_ID="unknown"
+    OS_VER="unknown"
+    OS_LIKE=""
+  fi
   success "Detected: ${OS_ID} ${OS_VER} (like: ${OS_LIKE:-none})"
 }
 
 install_system_deps() {
-  detect_remote_os
+  detect_os
 
   local pkg_cmd=""
 
@@ -276,12 +210,12 @@ sudo yum install -y curl git gcc gcc-c++ make python3 python3-devel sqlite 2>&1 
       ;;
   esac
 
-  remote "install system packages (${OS_ID})" "$pkg_cmd"
+  run_shell "install system packages (${OS_ID})" "$pkg_cmd"
   success "System packages ready"
 }
 
 install_node_isolated() {
-  remote "nvm + node ${NODE_VERSION} (isolated)" "
+  run_shell "nvm + node ${NODE_VERSION} (isolated)" "
 if [[ ! -d \"\${HOME}/.nvm\" ]]; then
   curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
 fi
@@ -300,85 +234,77 @@ grep -q 'nvm.sh' \"\${HOME}/.bashrc\" || {
   success "Node.js ${NODE_VERSION} isolated via nvm"
 }
 
-upload_dashboard_files() {
+copy_dashboard_files() {
+  mkdir -p "${INSTALL_DIR}/public"
   for f in server.js db.js ssh.js github.js package.json; do
     [[ -f "${DASHBOARD_FILES}/${f}" ]] \
-      && upload "${DASHBOARD_FILES}/${f}" "${INSTALL_DIR}/${f}" \
+      && copy_file "${DASHBOARD_FILES}/${f}" "${INSTALL_DIR}/${f}" \
       || warn "Not found: $f"
   done
   [[ -f "${DASHBOARD_FILES}/public/index.html" ]] \
-    && upload "${DASHBOARD_FILES}/public/index.html" "${INSTALL_DIR}/public/index.html" \
+    && copy_file "${DASHBOARD_FILES}/public/index.html" "${INSTALL_DIR}/public/index.html" \
     || warn "index.html not found"
-  upload "$CONFIG_FILE" "${INSTALL_DIR}/config.env"
+  copy_file "$CONFIG_FILE" "${INSTALL_DIR}/config.env"
 }
 
-upload_setup_scripts() {
-  local uploaded=0
+copy_setup_scripts() {
+  mkdir -p "${INSTALL_DIR}/setup"
+  local copied=0
   for f in "${SETUP_FILES}"/*.sh; do
     [[ -f "$f" ]] || continue
     fname="$(basename "$f")"
-    [[ "$fname" == "setup-das.sh" ]] && { info "Skipping: $fname"; continue; }
-    upload "$f" "${INSTALL_DIR}/setup/${fname}"
-    uploaded=$(( uploaded + 1 ))
+    [[ "$fname" == "setup-dashboard.sh" ]] && { info "Skipping: $fname"; continue; }
+    copy_file "$f" "${INSTALL_DIR}/setup/${fname}"
+    copied=$(( copied + 1 ))
   done
-  [[ $uploaded -gt 0 ]] && success "$uploaded setup script(s) uploaded" || warn "No setup scripts found"
-  remote_soft "chmod setup scripts" "chmod +x '${INSTALL_DIR}/setup/'*.sh 2>/dev/null || true"
+  [[ $copied -gt 0 ]] && success "$copied setup script(s) copied" || warn "No setup scripts found"
+  run_shell_soft "chmod setup scripts" "chmod +x '${INSTALL_DIR}/setup/'*.sh 2>/dev/null || true"
 }
 
 do_clean() {
   header "Clean — stop service and wipe ${INSTALL_DIR}"
-  confirm "This will STOP ${SERVICE_NAME} and DELETE ${INSTALL_DIR} on ${TARGET}."
+  confirm "This will STOP ${SERVICE_NAME} and DELETE ${INSTALL_DIR} on this machine."
   $DRY_RUN && { echo -e "  ${YELLOW}[dry-run] would stop + wipe${RESET}"; return 0; }
 
-  ssh_with_retry bash -s -- "${SERVICE_NAME}" "${INSTALL_DIR}" "${DASHBOARD_USER}" <<'REMOTE'
-set +e
-SVC="$1"; IDIR="$2"; DUSER="$3"
-UNIT_FILE="${HOME}/.config/systemd/user/${SVC}.service"
-
-systemctl --user stop "${SVC}.service" 2>/dev/null
-sleep 2
-state=$(systemctl --user is-active "${SVC}.service" 2>/dev/null || echo "inactive")
-[[ "$state" != "inactive" && "$state" != "failed" ]] && pkill -f "node server.js" 2>/dev/null || true
-systemctl --user disable "${SVC}.service" 2>/dev/null || true
-rm -f "${UNIT_FILE}"
-systemctl --user daemon-reload 2>/dev/null || true
-systemctl --user reset-failed  2>/dev/null || true
-[[ -d "${IDIR}" ]] && rm -rf "${IDIR}" && echo "Deleted: ${IDIR}" || echo "Already clean"
-REMOTE
+  set +e
+  UNIT_FILE="${HOME}/.config/systemd/user/${SERVICE_NAME}.service"
+  systemctl --user stop "${SERVICE_NAME}.service" 2>/dev/null
+  sleep 2
+  state=$(systemctl --user is-active "${SERVICE_NAME}.service" 2>/dev/null || echo "inactive")
+  [[ "$state" != "inactive" && "$state" != "failed" ]] && pkill -f "node server.js" 2>/dev/null || true
+  systemctl --user disable "${SERVICE_NAME}.service" 2>/dev/null || true
+  rm -f "${UNIT_FILE}"
+  systemctl --user daemon-reload 2>/dev/null || true
+  systemctl --user reset-failed  2>/dev/null || true
+  [[ -d "${INSTALL_DIR}" ]] && rm -rf "${INSTALL_DIR}" && echo "Deleted: ${INSTALL_DIR}" || echo "Already clean"
+  set -e
 
   success "Service stopped and directory removed."
 }
 
 header "Pre-flight"
 info "Repo root : ${REPO_ROOT}"
-info "Target    : ${TARGET}"
 info "Install   : ${INSTALL_DIR}"
 info "Port      : ${DASHBOARD_PORT}"
-
-if ! $DRY_RUN; then
-  purge_stale_host_key
-  wait_for_ssh
-fi
+info "User      : ${USER}"
 
 if $UPLOAD_ONLY; then
-  header "Upload — replace scripts on server"
-  remote "ensure directories exist" "mkdir -p '${INSTALL_DIR}'/{data/keys,public,setup}"
-  upload_setup_scripts
-  upload_dashboard_files
-  success "All files uploaded and replaced"
+  header "Upload — replace scripts in install dir"
+  mkdir -p "${INSTALL_DIR}"/{data/keys,public,setup}
+  copy_setup_scripts
+  copy_dashboard_files
+  success "All files copied and replaced"
   exit 0
 fi
 
 if $RESTART_ONLY; then
   header "Restart"
   $DRY_RUN && { echo -e "  ${YELLOW}[dry-run] would restart ${SERVICE_NAME}${RESET}"; exit 0; }
-  ssh_with_retry bash -s -- "${SERVICE_NAME}" <<'REMOTE'
-set +e
-SVC="$1"
-systemctl --user restart "${SVC}.service"
-sleep 2
-echo "${SVC}: $(systemctl --user is-active "${SVC}.service" 2>/dev/null || echo unknown)"
-REMOTE
+  set +e
+  systemctl --user restart "${SERVICE_NAME}.service"
+  sleep 2
+  echo "${SERVICE_NAME}: $(systemctl --user is-active "${SERVICE_NAME}.service" 2>/dev/null || echo unknown)"
+  set -e
   success "Dashboard restarted"
   exit 0
 fi
@@ -389,29 +315,25 @@ if $CLEAN_ONLY; then
 fi
 
 if $UPDATE_ONLY; then
-  header "Update — upload files and restart"
-  upload_dashboard_files
-  upload_setup_scripts
+  header "Update — copy files and restart"
+  copy_dashboard_files
+  copy_setup_scripts
   $DRY_RUN && { echo -e "  ${YELLOW}[dry-run] would npm install + restart${RESET}"; exit 0; }
-  ssh_with_retry bash -s -- "${INSTALL_DIR}" "${SERVICE_NAME}" <<'REMOTE'
-set -euo pipefail
-IDIR="$1"; SVC="$2"
-export NVM_DIR="${HOME}/.nvm"
-source "${NVM_DIR}/nvm.sh"
-cd "${IDIR}"
-npm install --omit=dev --quiet
-systemctl --user restart "${SVC}.service"
-sleep 2
-echo "${SVC}: $(systemctl --user is-active "${SVC}.service" 2>/dev/null || echo unknown)"
-REMOTE
+  export NVM_DIR="${HOME}/.nvm"
+  source "${NVM_DIR}/nvm.sh"
+  cd "${INSTALL_DIR}"
+  npm install --omit=dev --quiet
+  systemctl --user restart "${SERVICE_NAME}.service"
+  sleep 2
+  echo "${SERVICE_NAME}: $(systemctl --user is-active "${SERVICE_NAME}.service" 2>/dev/null || echo unknown)"
   success "Dashboard updated"
-  echo -e "\n  Dashboard  ${CYAN}http://${DASHBOARD_HOST}:${DASHBOARD_PORT}${RESET}"
+  echo -e "\n  Dashboard  ${CYAN}http://localhost:${DASHBOARD_PORT}${RESET}"
   exit 0
 fi
 
 $CLEAN && do_clean
 
-confirm "Install TAP DevOps Dashboard on ${TARGET} (Node ${NODE_VERSION})?"
+confirm "Install TAP DevOps Dashboard on this machine (Node ${NODE_VERSION})?"
 
 header "Step 1 — Detect OS and install system packages"
 install_system_deps
@@ -420,18 +342,18 @@ header "Step 2 — Node.js ${NODE_VERSION} (isolated via nvm)"
 install_node_isolated
 
 header "Step 3 — Create isolated directory structure"
-remote "mkdir" "mkdir -p '${INSTALL_DIR}'/{data/keys,public,setup} && echo done"
+run_shell "mkdir" "mkdir -p '${INSTALL_DIR}'/{data/keys,public,setup} && echo done"
 success "Directories ready"
 
-header "Step 4 — Upload dashboard files"
-upload_dashboard_files
-success "Dashboard files uploaded"
+header "Step 4 — Copy dashboard files"
+copy_dashboard_files
+success "Dashboard files copied"
 
-header "Step 5 — Upload setup scripts"
-upload_setup_scripts
+header "Step 5 — Copy setup scripts"
+copy_setup_scripts
 
 header "Step 6 — npm install (isolated)"
-remote "npm install" "
+run_shell "npm install" "
 export NVM_DIR=\"\${HOME}/.nvm\"
 source \"\${NVM_DIR}/nvm.sh\"
 cd '${INSTALL_DIR}'
@@ -441,32 +363,30 @@ echo done
 success "Dependencies installed"
 
 header "Step 7 — Patch DB script paths"
-remote_soft "fix db paths" "
+run_shell_soft "fix db paths" "
 DB='${INSTALL_DIR}/data/tap.db'
 [[ ! -f \"\$DB\" ]] && { echo 'No DB yet — skipping'; exit 0; }
 sqlite3 \"\$DB\" \"UPDATE apps SET setup_script = REPLACE(setup_script, '\$HOME/tap-devops/setup/', '${INSTALL_DIR}/setup/') WHERE setup_script LIKE '%tap-devops/setup/%';\"
-sqlite3 \"\$DB\" \"UPDATE apps SET setup_script = REPLACE(setup_script, '/home/azureuser/tap-devops/setup/', '${INSTALL_DIR}/setup/') WHERE setup_script LIKE '%tap-devops/setup/%';\"
+sqlite3 \"\$DB\" \"UPDATE apps SET setup_script = REPLACE(setup_script, '/home/ubuntu/tap-devops/setup/', '${INSTALL_DIR}/setup/') WHERE setup_script LIKE '%tap-devops/setup/%';\"
 sqlite3 \"\$DB\" 'SELECT app_id, setup_script FROM apps;'
 "
 success "DB paths patched"
 
 header "Step 8 — Systemd user service"
-$DRY_RUN && { echo -e "  ${YELLOW}[dry-run] would write + enable ${SERVICE_NAME}.service${RESET}"; } || \
-ssh_with_retry bash -s -- "${INSTALL_DIR}" "${SERVICE_NAME}" "${DASHBOARD_USER}" "${DASHBOARD_PORT}" <<'REMOTE'
-set +e
-IDIR="$1"; SVC="$2"; DUSER="$3"; PORT="$4"
+if $DRY_RUN; then
+  echo -e "  ${YELLOW}[dry-run] would write + enable ${SERVICE_NAME}.service${RESET}"
+else
+  export NVM_DIR="${HOME}/.nvm"
+  [ -s "${NVM_DIR}/nvm.sh" ] && source "${NVM_DIR}/nvm.sh"
 
-export NVM_DIR="${HOME}/.nvm"
-[ -s "${NVM_DIR}/nvm.sh" ] && source "${NVM_DIR}/nvm.sh"
+  NODE_BIN="$(command -v node 2>/dev/null || true)"
+  [[ -z "${NODE_BIN}" ]] && die "node not found after install"
+  info "node: ${NODE_BIN}"
 
-NODE_BIN="$(command -v node 2>/dev/null || true)"
-[[ -z "${NODE_BIN}" ]] && { echo "[ERROR] node not found"; exit 1; }
-echo "[INFO] node: ${NODE_BIN}"
+  UNIT_DIR="${HOME}/.config/systemd/user"
+  mkdir -p "${UNIT_DIR}"
 
-UNIT_DIR="${HOME}/.config/systemd/user"
-mkdir -p "${UNIT_DIR}"
-
-cat > "${UNIT_DIR}/${SVC}.service" <<UNIT
+  cat > "${UNIT_DIR}/${SERVICE_NAME}.service" <<UNIT
 [Unit]
 Description=TAP DevOps Dashboard
 After=network-online.target
@@ -474,8 +394,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=${IDIR}
-EnvironmentFile=${IDIR}/config.env
+WorkingDirectory=${INSTALL_DIR}
+EnvironmentFile=${INSTALL_DIR}/config.env
 Environment=NODE_ENV=production
 ExecStart=${NODE_BIN} server.js
 Restart=always
@@ -487,16 +407,16 @@ StandardError=journal
 WantedBy=default.target
 UNIT
 
-loginctl enable-linger "${DUSER}" 2>/dev/null || true
-systemctl --user daemon-reload
-systemctl --user enable --now "${SVC}.service"
-sleep 3
-echo "${SVC}: $(systemctl --user is-active "${SVC}.service" 2>/dev/null || echo unknown)"
-REMOTE
+  loginctl enable-linger "${USER}" 2>/dev/null || true
+  systemctl --user daemon-reload
+  systemctl --user enable --now "${SERVICE_NAME}.service"
+  sleep 3
+  echo "${SERVICE_NAME}: $(systemctl --user is-active "${SERVICE_NAME}.service" 2>/dev/null || echo unknown)"
+fi
 success "Service installed and started"
 
-header "Step 9 — Firewall"
-remote_soft "open port ${DASHBOARD_PORT}" "
+header "Step 9 — Firewall (GCP)"
+run_shell_soft "open port ${DASHBOARD_PORT}" "
 if command -v ufw &>/dev/null; then
   sudo ufw allow ${DASHBOARD_PORT}/tcp 2>/dev/null || true
   echo 'ufw: port ${DASHBOARD_PORT} opened'
@@ -505,13 +425,13 @@ elif command -v firewall-cmd &>/dev/null; then
   sudo firewall-cmd --reload 2>/dev/null || true
   echo 'firewalld: port ${DASHBOARD_PORT} opened'
 else
-  echo 'No firewall tool found — open port ${DASHBOARD_PORT} in cloud NSG manually'
+  echo 'No local firewall tool found — ensure GCP VPC firewall rule allows TCP ${DASHBOARD_PORT}'
 fi
 "
 
 header "Step 10 — Health check"
 sleep 4
-remote_soft "health check" "
+run_shell_soft "health check" "
 for i in 1 2 3 4 5; do
   if curl -sf http://localhost:${DASHBOARD_PORT}/api/auth/status 2>/dev/null | grep -q 'authenticated'; then
     echo 'HTTP: OK'; break
@@ -523,7 +443,7 @@ done
 "
 
 header "Step 11 — Verify"
-remote_soft "verify" "
+run_shell_soft "verify" "
 DB='${INSTALL_DIR}/data/tap.db'
 [[ -f \"\$DB\" ]] && sqlite3 \"\$DB\" 'SELECT app_id, setup_script FROM apps;' || true
 echo ''
@@ -531,18 +451,21 @@ echo 'Setup scripts:'
 ls '${INSTALL_DIR}/setup/' 2>/dev/null || echo '(none)'
 "
 
+EXTERNAL_IP=$(curl -sf --max-time 3 "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/externalIp" -H "Metadata-Flavor: Google" 2>/dev/null || echo "EXTERNAL_IP_NOT_FOUND")
+
 echo ""
 echo -e "${BOLD}${GREEN}━━━  Dashboard deployed  ━━━${RESET}"
 echo ""
-echo -e "  URL      ${CYAN}http://${DASHBOARD_HOST}:${DASHBOARD_PORT}${RESET}"
-echo -e "  Install  ${CYAN}${INSTALL_DIR}${RESET}"
-echo -e "  Scripts  ${CYAN}${INSTALL_DIR}/setup/${RESET}"
+echo -e "  Local URL    ${CYAN}http://localhost:${DASHBOARD_PORT}${RESET}"
+echo -e "  External URL ${CYAN}http://${EXTERNAL_IP}:${DASHBOARD_PORT}${RESET}"
+echo -e "  Install      ${CYAN}${INSTALL_DIR}${RESET}"
+echo -e "  Scripts      ${CYAN}${INSTALL_DIR}/setup/${RESET}"
 echo ""
-echo -e "  ${YELLOW}Logs:${RESET}    ssh $SSH_OPTS ${TARGET} 'journalctl --user -u ${SERVICE_NAME}.service -f'"
+echo -e "  ${YELLOW}Logs:${RESET}    journalctl --user -u ${SERVICE_NAME}.service -f"
 echo -e "  ${YELLOW}Restart:${RESET} $0 --restart"
 echo -e "  ${YELLOW}Update:${RESET}  $0 --update"
 echo -e "  ${YELLOW}Upload:${RESET}  $0 --upload"
 echo -e "  ${YELLOW}Wipe:${RESET}    $0 --clean-only"
 echo ""
-warn "If port ${DASHBOARD_PORT} is blocked, open it in your cloud NSG."
+warn "If port ${DASHBOARD_PORT} is blocked, add a GCP VPC firewall rule: allow ingress TCP ${DASHBOARD_PORT}."
 echo ""
